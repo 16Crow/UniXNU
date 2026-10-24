@@ -26,6 +26,7 @@ on:
           - kernel payload firmware bootimg
           - kernel userdata payload firmware bootimg
           - firmware
+          - gpu
         default: kernel
       export_images:
         description: Encrypt images into a private draft release for local retrieval
@@ -70,7 +71,7 @@ permissions:
 # One build per device configuration and ref. A dispatch for another device or defconfig runs next to it,
 # and a running build is never cancelled by a later dispatch.
 concurrency:
-  group: macos-build-${{ github.ref }}-${{ inputs.device_repository }}-${{ inputs.device_ref }}-${{ inputs.defconfig }}
+  group: macos-build-${{ github.ref }}-${{ inputs.device_repository }}-${{ inputs.device_ref }}-${{ inputs.defconfig }}-${{ inputs.steps == 'gpu' && 'gpu' || 'system' }}
   cancel-in-progress: false
 
 env:
@@ -289,6 +290,44 @@ jobs:
             out/sheng/tree/build/availability
           key: ${{ steps.kernel_cache.outputs.cache-primary-key }}
 
+      - name: Identify GPU source inputs
+        id: gpu_source
+        if: contains(inputs.steps, 'payload') || inputs.steps == 'gpu'
+        run: |
+          source_id=$(git ls-tree HEAD drivers/NativeMetal drivers/NativeAdreno kits/ArmSmmu4K kits/AdrenoPM4 | shasum -a 256 | cut -d ' ' -f 1)
+          echo "source_id=$source_id" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compiled GPU plugin
+        id: gpu_cache
+        if: contains(inputs.steps, 'payload') || inputs.steps == 'gpu'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sheng/tree/build/adreno-metal-plugin/NativeAdrenoMetal.bundle
+            out/sheng/tree/build/adreno-metal-plugin/adrenoprobed
+            out/sheng/tree/build/adreno-metal-plugin/trust.json
+            out/sheng/tree/build/adreno-metal-plugin/*.plist
+          key: sheng-gpu-${{ inputs.xcode }}-${{ steps.gpu_source.outputs.source_id }}-${{ hashFiles('feeds.toml', '.gitmodules', 'scripts/data/*inputs.json', 'scripts/*turnip*.py', 'scripts/*metal*.py', 'scripts/prepare-sheng-mesa.py', 'scripts/prepare-sheng-gpu.sh', 'scripts/requirements-adreno-compiler.txt', 'patches/mesa/**') }}
+
+      - name: Build GPU userspace
+        id: gpu
+        if: (contains(inputs.steps, 'payload') || inputs.steps == 'gpu') && steps.gpu_cache.outputs.cache-hit != 'true'
+        run: |
+          ./unixnu tree
+          mkdir -p out/sheng/logs
+          bash scripts/prepare-sheng-gpu.sh 2>&1 | tee out/sheng/logs/gpu-userspace.log
+
+      - name: Save compiled GPU plugin
+        if: steps.gpu.outcome == 'success' && steps.gpu_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            out/sheng/tree/build/adreno-metal-plugin/NativeAdrenoMetal.bundle
+            out/sheng/tree/build/adreno-metal-plugin/adrenoprobed
+            out/sheng/tree/build/adreno-metal-plugin/trust.json
+            out/sheng/tree/build/adreno-metal-plugin/*.plist
+          key: ${{ steps.gpu_cache.outputs.cache-primary-key }}
+
       - name: Build userdata
         id: userdata
         if: contains(inputs.steps, 'userdata')
@@ -309,13 +348,19 @@ jobs:
           if [ ! -f "$RUNNER_TEMP/trustcache" ]; then
             python3 scripts/prepare-sheng-trust-cache.py "$RUNNER_TEMP/trustcache"
           fi
-          if [ -f "$RUNNER_TEMP/trustcache" ]; then
+          # 默认原始模块外追加实际编译的插件 CDHash，沿用官方 owner trust 格式。
+          if [ -z "$(jq -r '.inputs.trust_cache_url // ""' "$GITHUB_EVENT_PATH")" ]; then
+            python3 out/sheng/tree/scripts/make-owner-trust-bundle.py
+            args+=(--owner-trust-cache "$GITHUB_WORKSPACE/out/sheng/tree/build/adreno-metal-plugin/owner-trust.bundle")
+          elif [ -f "$RUNNER_TEMP/trustcache" ]; then
             if [ "$OWNER_TRUST_CACHE" = true ]; then
               args+=(--owner-trust-cache "$RUNNER_TEMP/trustcache")
             else
               args+=(--trust-cache "$RUNNER_TEMP/trustcache")
             fi
           fi
+          python3 out/sheng/tree/scripts/make-gpu-addon.py --publish --clients SpringBoard "$RUNNER_TEMP/gpu-addon.bin"
+          args+=(--gpu-addon "$RUNNER_TEMP/gpu-addon.bin")
           if [ -f "$RUNNER_TEMP/data.dbr" ]; then args+=(--data-ramdisk "$RUNNER_TEMP/data.dbr"); fi
           if [ "$SKIP_SETUP" = true ]; then args+=(--skip-setup); fi
           ./unixnu build payload "${args[@]}"
