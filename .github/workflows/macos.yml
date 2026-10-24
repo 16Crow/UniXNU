@@ -243,6 +243,29 @@ jobs:
           ./unixnu build userdata
           df -h "$GITHUB_WORKSPACE"
 
+      - name: Build the Data seed
+        id: data_seed
+        if: contains(inputs.steps, 'payload')
+        # board.toml [payload.install] 让 payload 必须有 Data 种子。官方脚本给出配方
+        # （prepare-owner-data-fixture.py + packed_ramdisk.pack），但 APFS 卷 UUID 是随机的，
+        # 而内核按 UUID 选卷，UUID 编译在 defconfig 的 CONFIG_XNU_OWNER_DATA_VOLUME_UUID 里。
+        # 这里用 make-data-seed.py 精确指定它，再标记 Setup 完成并扩到平板分区大小。
+        run: |
+          set -euo pipefail
+          ./unixnu ipsw fetch OS
+          OS_DMG=$(find "$GITHUB_WORKSPACE/out/ipsw" -name '044-76040-038.dmg' | head -1)
+          [ -n "$OS_DMG" ] || { echo "::error::the OS disk image was not extracted"; exit 1; }
+          echo "OS image: $OS_DMG"
+          git submodule update --init --depth 1 drivers/DarwinBoot
+          python3 "$GITHUB_WORKSPACE/make-data-seed.py" \
+            --os-dmg "$OS_DMG" \
+            --packed-ramdisk "$GITHUB_WORKSPACE/drivers/DarwinBoot/Test/packed_ramdisk.py" \
+            --size-mib 1024 \
+            --output "$RUNNER_TEMP/data.dbr"
+          python3 scripts/seed-data-skip-setup.py "$RUNNER_TEMP/data.dbr" "$RUNNER_TEMP/data-setup.dbr"
+          mv "$RUNNER_TEMP/data-setup.dbr" "$RUNNER_TEMP/data.dbr"
+          ls -lh "$RUNNER_TEMP/data.dbr"
+
       - name: Build payload
         id: payload
         if: contains(inputs.steps, 'payload')
