@@ -23,6 +23,7 @@ on:
           - kernel payload
           - kernel userdata
           - kernel userdata payload
+          - kernel payload firmware bootimg
         default: kernel
       xcode:
         description: Xcode version of the macos-26 image (/Applications/Xcode_<version>.app)
@@ -262,6 +263,34 @@ jobs:
           if [ "$SKIP_SETUP" = true ]; then args+=(--skip-setup); fi
           ./unixnu build payload "${args[@]}"
 
+      - name: Build the UEFI firmware
+        id: firmware
+        if: contains(inputs.steps, 'firmware')
+        # 固件步骤要 Mu-Silicium 移植（--uefi）和 Mu_Basecore（--edk2）。
+        # prepare-sheng-complete.sh 已经把 uefi-sheng 克隆到工作区；edk2 由 unixnu fetch 拉进 out/feeds。
+        run: |
+          set -euo pipefail
+          [ -d "$GITHUB_WORKSPACE/uefi-sheng/.git" ] || git clone --depth 1 https://github.com/UniXNU/uefi-sheng.git "$GITHUB_WORKSPACE/uefi-sheng"
+          git -C "$GITHUB_WORKSPACE/uefi-sheng" submodule update --init --recursive
+          EDK2=$(find "$GITHUB_WORKSPACE/out/feeds" -maxdepth 1 -type d -name 'mu_basecore-*' | head -1)
+          [ -n "$EDK2" ] || { echo "::error::mu_basecore checkout not found in out/feeds"; exit 1; }
+          echo "using edk2 at $EDK2"
+          ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi-sheng" --edk2 "$EDK2"
+          ls -l "$GITHUB_WORKSPACE/out/sheng/firmware/" 2>/dev/null || true
+
+      - name: Pack the boot image
+        id: bootimg
+        if: contains(inputs.steps, 'bootimg')
+        # 启动镜像 = BootShim + UEFI 固件卷 + 负载 FAT 卷 + 设备树。
+        run: |
+          set -euo pipefail
+          DTB=$(find "$GITHUB_WORKSPACE/out" -name 'sheng.dtb' | head -1)
+          if [ -z "$DTB" ]; then DTB=$(find "$GITHUB_WORKSPACE/out" -name '*.dtb' | head -1); fi
+          [ -n "$DTB" ] || { echo "::error::no compiled device tree found under out/"; exit 1; }
+          echo "using dtb $DTB"
+          ./unixnu bootimg --uefi "$GITHUB_WORKSPACE/uefi-sheng" --dtb "$DTB" -o "$GITHUB_WORKSPACE/out/sheng/boot/boot.img"
+          ls -l "$GITHUB_WORKSPACE/out/sheng/boot/boot.img"
+
       - name: Collect the text logs
         id: logs
         if: always() && steps.check.outcome == 'success'
@@ -313,6 +342,8 @@ jobs:
           KERNEL: ${{ steps.kernel.outcome }}
           USERDATA: ${{ steps.userdata.outcome }}
           PAYLOAD: ${{ steps.payload.outcome }}
+          FIRMWARE: ${{ steps.firmware.outcome }}
+          BOOTIMG: ${{ steps.bootimg.outcome }}
         run: |
           {
             echo "## macOS build: ${BOARD:-unknown} (${DEFCONFIG}, ${STEPS})"
@@ -322,6 +353,8 @@ jobs:
             echo "| kernel | ${KERNEL:-skipped} |"
             echo "| userdata | ${USERDATA:-skipped} |"
             echo "| payload | ${PAYLOAD:-skipped} |"
+            echo "| firmware | ${FIRMWARE:-skipped} |"
+            echo "| boot image | ${BOOTIMG:-skipped} |"
             echo
             echo "This workflow only checks that the build works. It publishes text logs (7 days) and no images."
             xcodebuild -version
