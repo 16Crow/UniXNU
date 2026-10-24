@@ -188,9 +188,14 @@ service_meta = by_name['__ZN9IOService10gMetaClassE']
 layout_obj = ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/libkern/DEVELOPMENT/OSMetaClass.cpo'
 dwarf = subprocess.check_output(['xcrun', 'dwarfdump', '--name=OSMetaClass', '--show-children', layout_obj], text=True)
 layout = metaclass_layout(dwarf)
+# bsd_init 是内核本地符号，不一定进入供 kext 使用的导出表。
+native_symbols = subprocess.check_output(['xcrun', 'nm', '-U', kernel_path], text=True)
+checkpoint_symbol = re.search(r'^([0-9a-fA-F]+)\s+\S\s+_bsd_init$', native_symbols, re.M)
+require(checkpoint_symbol, 'Cannot resolve actual bsd_init checkpoint')
+checkpoint = int(checkpoint_symbol[1], 16)
 if args.prepare_snapshot:
     capture = dict(kernel_sha256=plan['candidate_sha256'], needs_live_capture=True,
-                   checkpoint=hex(by_name['_bsd_init']),
+                   checkpoint=hex(checkpoint),
                    read_memory=[f'{meta:x}:50', f'{service_meta:x}:50'],
                    compiled_metaclass_offsets=layout,
                    layout_object_sha256=hashlib.sha256(layout_obj.read_bytes()).hexdigest())
@@ -199,7 +204,7 @@ if args.prepare_snapshot:
     raise SystemExit(0)
 d = json.loads((ROOT / 'build/darwinboot-storage-native-metadata/gdb-stop.json').read_text())
 require(d['kernel_sha256'] == plan['candidate_sha256'] and not d['bounded_timeout_interrupted'], 'Wrong or incomplete live storage metadata observation')
-require(int(d['pc'], 16) == by_name['_bsd_init'], 'Snapshot did not reach actual bsd_init')
+require(int(d['pc'], 16) == checkpoint, 'Snapshot did not reach actual bsd_init')
 actual = bytes.fromhex(d['memory'][f'{meta:x}:50'])
 service = bytes.fromhex(d['memory'][f'{service_meta:x}:50'])
 require(layout == dict(superClassLink=16, className=24, classSize=32), 'Compiled metaclass ABI changed')
