@@ -271,7 +271,20 @@ jobs:
             --os-dmg "$OS_DMG" \
             --packed-ramdisk "$GITHUB_WORKSPACE/drivers/DarwinBoot/Test/packed_ramdisk.py" \
             --size-mib 1024 \
-            --output "$GITHUB_WORKSPACE/data.dbr"
+            --output "$GITHUB_WORKSPACE/data-small.dbr"
+
+      - name: Grow the Data seed to the tablet storage
+        # 实测数据（fastboot getvar all，2026-10-24）：
+        #   partition-size:userdata = 0x3A173BB000 = 249497890816 字节 = 232.36 GiB
+        #   与 board.toml 的 first_lba/last_lba 算出的容量逐字节一致，说明板级文件就是按本型号写的。
+        # seed-data-grow.py --auto 会问平板要分区大小；CI 上没有平板，所以直接给字节数。
+        run: |
+          set -e
+          python3 "$GITHUB_WORKSPACE/scripts/seed-data-grow.py" \
+            --userdata-bytes 249497890816 \
+            --reserve-mib 1024 \
+            "$GITHUB_WORKSPACE/data-small.dbr" \
+            "$GITHUB_WORKSPACE/data.dbr"
           ls -lh "$GITHUB_WORKSPACE/data.dbr"
 
       - name: Build the payload
