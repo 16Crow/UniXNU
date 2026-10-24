@@ -24,6 +24,7 @@ on:
           - kernel userdata
           - kernel userdata payload
           - kernel payload firmware bootimg
+          - firmware
         default: kernel
       xcode:
         description: Xcode version of the macos-26 image (/Applications/Xcode_<version>.app)
@@ -243,6 +244,7 @@ jobs:
 
       - name: Restore kernel compilation cache
         id: kernel_cache
+        if: contains(inputs.steps, 'kernel')
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -256,6 +258,7 @@ jobs:
 
       - name: Prepare official build inputs
         id: kernel
+        if: contains(inputs.steps, 'kernel')
         env:
           # prepare-xnu-source.py lists Apple sources through the GitHub API; anonymous calls from hosted runners hit
           # the shared rate limit (HTTP 403).
@@ -311,6 +314,15 @@ jobs:
           set -euo pipefail
           [ -d "$GITHUB_WORKSPACE/uefi-sheng/.git" ] || git clone --depth 1 https://github.com/UniXNU/uefi-sheng.git "$GITHUB_WORKSPACE/uefi-sheng"
           git -C "$GITHUB_WORKSPACE/uefi-sheng" submodule update --init --recursive
+          if [ "$STEPS" = firmware ]; then
+            ./unixnu tree
+            python3 out/sheng/tree/scripts/fetch-sheng-dts.py
+            ln -s "$GITHUB_WORKSPACE/uefi-sheng" out/sheng/tree/uefi-sheng
+          fi
+          # 源码版固件仍需要 sheng 原厂分区配置，由官方导入工具从系统包提取。
+          bash scripts/prepare-sheng-vendor-uefi.sh
+          # APRIORI 必须引用 DSC 已构建的源码模块，旧厂商路径在公开输入中不存在。
+          python3 scripts/prepare-sheng-firmware.py "$GITHUB_WORKSPACE/uefi-sheng"
           if [ -z "$(find "$GITHUB_WORKSPACE/out/feeds" -maxdepth 1 -type d -name 'mu_basecore-*' 2>/dev/null | head -1)" ]; then
             echo "fetching edk2 (mu_basecore)"
             ./unixnu fetch edk2
