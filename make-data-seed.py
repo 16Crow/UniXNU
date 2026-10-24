@@ -17,13 +17,13 @@ The upstream project already ships the recipe in pieces:
     the DBRDISK1 format the payload step expects.
   * scripts/seed-data-skip-setup.py marks Setup as done on a copy.
 
-This script joins them and fixes the one thing the upstream helper leaves to
+This script joins them and handles the one thing the upstream helper leaves to
 chance: the APFS *volume UUID*.  The sheng kernel selects the Data volume by
-UUID, and that UUID is compiled into the kernel as
-CONFIG_XNU_OWNER_DATA_VOLUME_UUID="18AB5557-DC2D-469B-8758-855E60F5B0DF"
-(configs/sheng_defconfig).  A container made with plain "hdiutil create -fs
-APFS" gets a random UUID, and the kernel would then not find the volume.
-macOS "newfs_apfs -u <uuid>" lets us set it exactly.
+UUID, and that value reaches the kernel as XNU_OWNER_DATA_VOLUME_UUID (the
+environment variable build-xnu-4k-baseline.sh reads; configs/sheng_defconfig
+only supplies a default).  macOS cannot be told which UUID to use, so the
+script formats the seed, reads the UUID macOS assigned, and writes it next to
+the image for the kernel build to pick up.
 
 Usage (on a macOS machine, or on the GitHub macOS runner):
 
@@ -35,9 +35,9 @@ Usage (on a macOS machine, or on the GitHub macOS runner):
       --os-dmg out/ipsw/21H461/044-76040-038.dmg \
       --output data.dbr
 
-  # 3. (optional) mark Setup as done and grow the container to the tablet:
+  # 3. mark Setup as done and grow the container to the tablet:
   python3 scripts/seed-data-skip-setup.py data.dbr data-setup.dbr
-  python3 scripts/seed-data-grow.py --auto data.dbr data-grow.dbr
+  python3 scripts/seed-data-grow.py --auto --userdata-bytes <bytes> data.dbr data-grow.dbr
 
 Then:
   ./unixnu build payload --unique-chip-id <hex> --trust-cache <bundle> \
@@ -67,6 +67,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 # The UUID the sheng kernel looks for.  It is the value of
 # CONFIG_XNU_OWNER_DATA_VOLUME_UUID in configs/sheng_defconfig, and only the
@@ -143,7 +145,11 @@ def main():
     sys.path.insert(0, str(ramdisk.resolve().parent))
     import packed_ramdisk
 
-    with tempfile.TemporaryDirectory(prefix='unixnu-data-seed-') as scratch:
+    # The scratch directory lives under build/, the way seed-data-skip-setup.py does it.
+    # The system default (/var/folders) resolves to /private/var/folders once mounted, and
+    # the mount point hdiutil reports then never equals the requested path.
+    (ROOT / 'build').mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='data-seed-', dir=str(ROOT / 'build')) as scratch:
         scratch = Path(scratch)
         os_mount = scratch / 'os-mount'
         os_mount.mkdir()
@@ -199,7 +205,7 @@ def main():
         finally:
             subprocess.run(['hdiutil', 'detach', os_device, '-force'], capture_output=True)
 
-        # 5. Pack the raw container into the DBRDISK1 format the payload wants.
+        # 3. Pack the image into the DBRDISK1 format the payload wants.
         metadata = packed_ramdisk.pack(raw, output)
         # The kernel build needs the UUID this seed actually carries; the defconfig value is
         # only a default and macOS cannot be told which UUID to use.
