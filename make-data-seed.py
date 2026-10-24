@@ -183,12 +183,16 @@ def main():
             attached = plistlib.loads(subprocess.check_output(
                 ['hdiutil', 'attach', '-nobrowse', '-owners', 'off',
                  '-mountpoint', str(seed_mount), '-plist', str(raw)]))
-            volume_device = attached['system-entities'][0]['dev-entry']
+            # The first entity is what gets detached; the volume is the one that
+            # actually carries the requested mount point, and only it answers
+            # diskutil info with a VolumeUUID.
+            detach_device = attached['system-entities'][0]['dev-entry']
             volumes = [e for e in attached['system-entities'] if e.get('mount-point') == str(seed_mount)]
             if len(volumes) != 1:
                 detail = ', '.join(f"{e.get('dev-entry')}@{e.get('mount-point')}"
                                    for e in attached['system-entities']) or 'no entities'
                 raise SystemExit(f'Require exactly one newly formatted scratch volume; got: {detail}')
+            volume_device = volumes[0]['dev-entry']
             try:
                 info = plistlib.loads(subprocess.check_output(['diskutil', 'info', '-plist', volume_device]))
                 print(f"APFS volume {info.get('VolumeName')} uuid {info.get('VolumeUUID')}")
@@ -201,7 +205,7 @@ def main():
                 os.chmod(seed_mount / 'tmp', 0o1777)
                 print(f'copied {files} files ({copied} bytes) of private/var')
             finally:
-                subprocess.run(['hdiutil', 'detach', volume_device, '-force'], capture_output=True)
+                subprocess.run(['hdiutil', 'detach', detach_device, '-force'], capture_output=True)
         finally:
             subprocess.run(['hdiutil', 'detach', os_device, '-force'], capture_output=True)
 
