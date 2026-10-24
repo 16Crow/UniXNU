@@ -8,6 +8,13 @@
 /.local*/
 /Mu_Basecore/
 
+# Other checkouts the build steps make next to this repository. They are whole
+# repositories of their own (the device repository and the Mu-Silicium port)
+# and must never be absorbed into this one.
+/uefi-sheng/
+/device/
+/UniXNU-sheng/
+
 # Documentation site
 /docs/node_modules/
 /docs/.vitepress/dist/
@@ -46,5 +53,7 @@ __pycache__/
 *.fw
 *.pem
 *.key
+*.trustcache
+*.trust
 .env
 local.toml
