@@ -155,7 +155,9 @@ def main():
         os_mount.mkdir()
         seed_mount = scratch / 'seed-mount'
         seed_mount.mkdir()
-        raw = scratch / 'seed.raw'
+        # hdiutil create appends its own suffix, so name the image with one and keep
+        # the real path for the later attach and pack steps.
+        raw = scratch / 'seed.cdr'
 
         # 1. Mount the original OS volume read-only to read its private/var.
         attached = attach_plist('hdiutil', 'attach', '-readonly', '-nobrowse', '-owners', 'off',
@@ -172,6 +174,8 @@ def main():
             # such option), so the UUID is read back and reported for the kernel build.
             run('hdiutil', 'create', '-size', f'{args.size_mib}m', '-layout', 'NONE',
                 '-fs', 'APFS', '-volname', VOLUME_NAME, '-type', 'UDTO', str(raw))
+            if not raw.is_file():
+                raise SystemExit(f'hdiutil create produced no image at {raw}')
             attached_seed = attach_plist('hdiutil', 'attach', '-nobrowse', '-owners', 'off',
                                          '-mountpoint', str(seed_mount), '-plist', str(raw))
             seed_entities = attached_seed['system-entities']
