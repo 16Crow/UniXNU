@@ -25,10 +25,17 @@ if not library.exists():
     sys.exit('Build the host Turnip first: python3 scripts/build-turnip-darwin.py --target host')
 
 includes = out / 'host-include'
+includes.mkdir(parents=True, exist_ok=True)
+# 驱动已使用持久导入接口，旧版主机替身尚未声明对应类型和选项位。
+# 仅补主机头文件；实际 iPadOS 构建仍使用原始 XNU 头文件。
+(includes / 'XnuMemoryFixtureCompat.h').write_text(
+    '#pragma once\n#include "XnuMemoryFixture.h"\n'
+    'using IODirection = unsigned;\n'
+    'inline constexpr IOOptionBits kIOMemoryPersistent = 0x00010000;\n')
 for name in ['IOKit/IOTypes.h', 'IOKit/IOReturn.h', 'IOKit/IOBufferMemoryDescriptor.h', 'IOKit/IOLib.h', 'kern/task.h']:
     path = includes / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('#include "XnuMemoryFixture.h"\n')
+    path.write_text('#include "XnuMemoryFixtureCompat.h"\n')
 
 objects = []
 for stem in ['ArmSmmu4KContext', 'ArmSmmu4KProgram', 'ArmSmmu4KLive', 'ArmSmmu4KStreams', 'ArmSmmu4KMmio']:
