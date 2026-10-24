@@ -23,7 +23,7 @@ import sys
 device = Path(sys.argv[1])
 board = device / 'board.toml'
 entries = ['build-corecrypto-14.py', 'build-corecrypto-14.py --namespace',
-           'build-arm-driver.py ArmVirtPlatform', 'build-arm-driver.py ArmCpu',
+           'build-arm-driver.py ArmDTPlatform', 'build-arm-driver.py ArmCpu',
            'build-libpthread-kernel.py']
 text, count = re.subn(r'(?ms)^archives = \[.*?^\]',
                      'archives = ' + json.dumps(entries, indent=2), board.read_text())
@@ -31,7 +31,7 @@ if count != 1:
     raise SystemExit('Cannot select the explicit QEMU archive chain')
 board.write_text(text)
 names = ('BUILD_ARCHIVES', 'SOURCE_CORECRYPTO14', 'SOURCE_PTHREAD',
-         'ARMVIRT_PLATFORM', 'ARMCPU', 'TRUST_CACHE_RUNTIME', 'NATIVE_ARCH_TIMER')
+         'ARM_DT_PLATFORM', 'ARMCPU', 'TRUST_CACHE_RUNTIME', 'NATIVE_ARCH_TIMER')
 config = '\n'.join('CONFIG_XNU_' + name + '=y' for name in names)
 (device / 'configs/sheng_qemu_evidence_defconfig').write_text(
     config + '\nCONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"\n')
@@ -113,7 +113,7 @@ plan = json.loads(Path('build/storage-abi/snapshot-plan.json').read_text())
 command = ['python3', 'scripts/probe-darwinboot-xnu.py', '--kernel', sys.argv[1],
            '--output', 'build/darwinboot-storage-native-metadata',
            '--break-symbol', '_bsd_init', '--timeout', '120',
-           '--armvirt', '--qemu-vmm-present', '--armcpu',
+           '--armvirt', '--armdt-platform', '--qemu-vmm-present', '--armcpu',
            '--nvram-proxy', '--crypto-hash-method', 'sha2-384', '--amfi-platform-only']
 for request in plan['read_memory']:
     command += ['--read-memory', request]
