@@ -3,6 +3,7 @@
 import base64
 import concurrent.futures
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -34,7 +35,8 @@ def get(url, attempts=4):
             if error.code in (403, 429) and TOKEN and 'Authorization' not in headers:
                 headers['Authorization'] = 'Bearer ' + TOKEN
             time.sleep(5 * (attempt + 1))
-        except urllib.error.URLError as error:
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError) as error:
+            # 连接被对端重置、超时都是可重试的瞬时故障。
             last = error
             time.sleep(5 * (attempt + 1))
     raise SystemExit(f'cannot read {url}: {last}')
@@ -97,6 +99,6 @@ if __name__ == '__main__':
         raw = (firmware['repository'].replace('https://github.com/', 'https://raw.githubusercontent.com/') +
                '/' + firmware['tree_sha'] + '/' + name)
         jobs.append((ROOT / '.cache/firmware/sheng-gpu' / name, [(api, 'plain'), (raw, 'plain')], expected, blob))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         sizes = list(executor.map(fetch, jobs))
     print(f'PASS: {len(sizes)} exact source/firmware inputs, {sum(sizes)} bytes; no GPU execution/authenticity claim')
