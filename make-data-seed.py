@@ -123,8 +123,6 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='The DBRDISK1 seed to write')
     parser.add_argument('--packed-ramdisk', type=Path,
                         help='Path to drivers/DarwinBoot/Test/packed_ramdisk.py')
-    parser.add_argument('--size-mib', type=int, default=64,
-                        help='Raw container size in MiB (default 64; grow it later with seed-data-grow.py)')
     args = parser.parse_args()
 
     if sys.platform != 'darwin':
@@ -144,10 +142,6 @@ def main():
             raise SystemExit('Pass --packed-ramdisk with the path to packed_ramdisk.py')
     sys.path.insert(0, str(ramdisk.resolve().parent))
     import packed_ramdisk
-
-    size = args.size_mib * 1024 * 1024
-    if size % 4096:
-        raise SystemExit('The container size must be a multiple of 4096')
 
     with tempfile.TemporaryDirectory(prefix='unixnu-data-seed-') as scratch:
         scratch = Path(scratch)
@@ -169,37 +163,39 @@ def main():
                 raise SystemExit(f'{os_mount} has no private/var; wrong disk image?')
             print(f'mounted the original OS volume from {os_dmg.name}')
 
-            # 2. Let macOS build the APFS image itself.  hdiutil create -fs APFS is the
-            # path the upstream fixture uses; newfs_apfs cannot set a volume UUID (no
-            # such option), so the UUID is read back and reported for the kernel build.
-            run('hdiutil', 'create', '-size', f'{args.size_mib}m', '-layout', 'NONE',
-                '-fs', 'APFS', '-volname', VOLUME_NAME, '-type', 'UDTO', str(raw))
+            # 2. Format the scratch image.  The disk operations below follow
+            # scripts/prepare-owner-data-fixture.py exactly: that script is upstream,
+            # it runs on the macOS runner, and guessing around it has already cost
+            # three failed builds.  The size stays at the 32 MiB the upstream uses;
+            # a bigger Data volume comes from seed-data-grow.py afterwards.
+            # newfs_apfs cannot set a volume UUID (the option does not exist), so the
+            # UUID macOS assigns is read back and reported for the kernel build.
+            subprocess.run(['hdiutil', 'create', '-size', '32m', '-layout', 'NONE', '-fs', 'APFS',
+                            '-volname', VOLUME_NAME, '-type', 'UDTO', str(raw)], check=True)
             if not raw.is_file():
                 raise SystemExit(f'hdiutil create produced no image at {raw}')
-            attached_seed = attach_plist('hdiutil', 'attach', '-nobrowse', '-owners', 'off',
-                                         '-mountpoint', str(seed_mount), '-plist', str(raw))
-            seed_entities = attached_seed['system-entities']
-            mounted = [e for e in seed_entities if e.get('mount-point') == str(seed_mount)]
-            if len(mounted) != 1:
-                raise SystemExit('Require exactly one newly formatted scratch volume')
-            volume_device = mounted[0]['dev-entry']
+            attached = plistlib.loads(subprocess.check_output(
+                ['hdiutil', 'attach', '-nobrowse', '-owners', 'off',
+                 '-mountpoint', str(seed_mount), '-plist', str(raw)]))
+            volume_device = attached['system-entities'][0]['dev-entry']
+            volumes = [e for e in attached['system-entities'] if e.get('mount-point') == str(seed_mount)]
+            if len(volumes) != 1:
+                detail = ', '.join(f"{e.get('dev-entry')}@{e.get('mount-point')}"
+                                   for e in attached['system-entities']) or 'no entities'
+                raise SystemExit(f'Require exactly one newly formatted scratch volume; got: {detail}')
             try:
-                info = attach_plist('diskutil', 'info', '-plist', volume_device)
-                print(f'APFS volume {info.get("VolumeName")} uuid {info.get("VolumeUUID")}')
+                info = plistlib.loads(subprocess.check_output(['diskutil', 'info', '-plist', volume_device]))
+                print(f"APFS volume {info.get('VolumeName')} uuid {info.get('VolumeUUID')}")
                 volume_uuid = str(info.get('VolumeUUID', ''))
                 if not volume_uuid:
                     raise SystemExit('the formatted seed reports no volume UUID')
-                try:
-                    files, copied = copy_tree(var, seed_mount)
-                    for name in EXTRA_DIRECTORIES:
-                        (seed_mount / name).mkdir(parents=True, exist_ok=True)
-                    os.chmod(seed_mount / 'tmp', 0o1777)
-                    print(f'copied {files} files ({copied} bytes) of private/var')
-                finally:
-                    subprocess.run(['diskutil', 'unmount', volume_device], capture_output=True)
+                files, copied = copy_tree(var, seed_mount)
+                for name in EXTRA_DIRECTORIES:
+                    (seed_mount / name).mkdir(parents=True, exist_ok=True)
+                os.chmod(seed_mount / 'tmp', 0o1777)
+                print(f'copied {files} files ({copied} bytes) of private/var')
             finally:
-                subprocess.run(['hdiutil', 'detach', volume_device, '-force'],
-                               capture_output=True)
+                subprocess.run(['hdiutil', 'detach', volume_device, '-force'], capture_output=True)
         finally:
             subprocess.run(['hdiutil', 'detach', os_device, '-force'], capture_output=True)
 

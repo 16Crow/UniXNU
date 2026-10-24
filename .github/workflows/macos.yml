@@ -211,8 +211,9 @@ jobs:
         if: contains(inputs.steps, 'payload')
         # 内核按 UUID 选 Data 卷，而 macOS 没有任何工具能给 APFS 卷指定 UUID
         # （newfs_apfs 没有 -u 选项，apfs.util -s 只能随机化）。所以顺序反过来：
-        # 先用 hdiutil create -fs APFS 造种子，读出它实际的 UUID，再把这个 UUID
-        # 作为 XNU_OWNER_DATA_VOLUME_UUID 编进内核。
+        # 先造种子，读出它实际的 UUID，再把这个 UUID 作为 XNU_OWNER_DATA_VOLUME_UUID 编进内核。
+        # 磁盘操作完全照上游 prepare-owner-data-fixture.py：32 MiB 是那个脚本在 macOS runner 上
+        # 验证过的值，需要更大容量时用 seed-data-grow.py 扩，而不是改创建时的大小。
         run: |
           set -euo pipefail
           ./unixnu ipsw fetch OS
@@ -223,10 +224,16 @@ jobs:
           python3 "$GITHUB_WORKSPACE/make-data-seed.py" \
             --os-dmg "$OS_DMG" \
             --packed-ramdisk "$GITHUB_WORKSPACE/drivers/DarwinBoot/Test/packed_ramdisk.py" \
-            --size-mib 1024 \
             --output "$RUNNER_TEMP/data.dbr"
           python3 scripts/seed-data-skip-setup.py "$RUNNER_TEMP/data.dbr" "$RUNNER_TEMP/data-setup.dbr"
           mv "$RUNNER_TEMP/data-setup.dbr" "$RUNNER_TEMP/data.dbr"
+          # 32 MiB 的种子按平板 userdata 分区大小扩展。--auto 会扣掉根镜像、日志预留、
+          # 4 MiB 保护段和存储位图，再留 1 GiB 余量；CI 上没有平板，所以直接给实测字节数
+          # （fastboot getvar partition-size:userdata = 0x3A173BB000）。卷 UUID 不变。
+          python3 scripts/seed-data-grow.py --auto --userdata-bytes 249497890816 \
+            --reserve-mib 1024 \
+            "$RUNNER_TEMP/data.dbr" "$RUNNER_TEMP/data-grown.dbr"
+          mv "$RUNNER_TEMP/data-grown.dbr" "$RUNNER_TEMP/data.dbr"
           SEED_UUID=$(cat "$RUNNER_TEMP/data.dbr.uuid")
           echo "Data volume UUID: $SEED_UUID"
           echo "seed_uuid=$SEED_UUID" >> "$GITHUB_OUTPUT"
