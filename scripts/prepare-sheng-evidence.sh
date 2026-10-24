@@ -10,10 +10,35 @@ if [ "${STEPS:-kernel}" != kernel ]; then
   exit 1
 fi
 
-# 最小候选只用于打破“先有归档还是先有运行证据”的构建循环。
-printf '%s\n' 'CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"' > "$UNIXNU_DEVICE/configs/sheng_evidence_defconfig"
-./unixnu defconfig sheng_evidence_defconfig
+# QEMU 采集使用实际虚拟硬件平台驱动，避免由原版平台驱动访问板级 MMIO。
+# 这里只准备审计运行环境；完整 sheng 配置和归档清单随后保持原样。
+mkdir -p "$ROOT/out/sheng"
+cp "$UNIXNU_DEVICE/board.toml" "$ROOT/out/sheng/evidence-board.toml"
+python3 - "$UNIXNU_DEVICE" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+device = Path(sys.argv[1])
+board = device / 'board.toml'
+entries = ['build-corecrypto-14.py', 'build-corecrypto-14.py --namespace',
+           'build-arm-driver.py ArmVirtPlatform', 'build-arm-driver.py ArmCpu',
+           'build-libpthread-kernel.py']
+text, count = re.subn(r'(?ms)^archives = \[.*?^\]',
+                     'archives = ' + json.dumps(entries, indent=2), board.read_text())
+if count != 1:
+    raise SystemExit('Cannot select the explicit QEMU archive chain')
+board.write_text(text)
+names = ('BUILD_ARCHIVES', 'SOURCE_CORECRYPTO14', 'SOURCE_PTHREAD',
+         'ARMVIRT_PLATFORM', 'ARMCPU', 'TRUST_CACHE_RUNTIME', 'NATIVE_ARCH_TIMER')
+config = '\n'.join('CONFIG_XNU_' + name + '=y' for name in names)
+(device / 'configs/sheng_qemu_evidence_defconfig').write_text(
+    config + '\nCONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"\n')
+PY
+./unixnu defconfig sheng_qemu_evidence_defconfig
 ./unixnu build kernel
+cp "$ROOT/out/sheng/evidence-board.toml" "$UNIXNU_DEVICE/board.toml"
 
 TREE=$ROOT/out/sheng/tree
 # 无论后续停在哪一步，都把实际虚拟机日志带回官方日志目录。
@@ -23,6 +48,9 @@ collect_probe_logs() {
     while IFS= read -r path; do
       cp "$path" "$ROOT/out/sheng/logs/$(basename "$path")" || true
     done < <(find "$TREE/build/darwinboot-storage-native-metadata" -maxdepth 1 -name '*.log' -type f)
+    if [ -f "$TREE/build/darwinboot-storage-native-metadata/gdb-stop.json" ]; then
+      cp "$TREE/build/darwinboot-storage-native-metadata/gdb-stop.json" "$ROOT/out/sheng/logs/qemu-storage-snapshot.log" || true
+    fi
   fi
   exit "$result"
 }
@@ -70,7 +98,8 @@ import sys
 plan = json.loads(Path('build/storage-abi/snapshot-plan.json').read_text())
 command = ['python3', 'scripts/probe-darwinboot-xnu.py', '--kernel', sys.argv[1],
            '--output', 'build/darwinboot-storage-native-metadata',
-           '--break-symbol', '_bsd_init', '--timeout', '120']
+           '--break-symbol', '_bsd_init', '--timeout', '120',
+           '--armvirt', '--qemu-vmm-present', '--armcpu']
 for request in plan['read_memory']:
     command += ['--read-memory', request]
 subprocess.run(command, check=True)
