@@ -272,6 +272,10 @@ jobs:
           set -euo pipefail
           [ -d "$GITHUB_WORKSPACE/uefi-sheng/.git" ] || git clone --depth 1 https://github.com/UniXNU/uefi-sheng.git "$GITHUB_WORKSPACE/uefi-sheng"
           git -C "$GITHUB_WORKSPACE/uefi-sheng" submodule update --init --recursive
+          if [ -z "$(find "$GITHUB_WORKSPACE/out/feeds" -maxdepth 1 -type d -name 'mu_basecore-*' 2>/dev/null | head -1)" ]; then
+            echo "fetching edk2 (mu_basecore)"
+            ./unixnu fetch edk2
+          fi
           EDK2=$(find "$GITHUB_WORKSPACE/out/feeds" -maxdepth 1 -type d -name 'mu_basecore-*' | head -1)
           [ -n "$EDK2" ] || { echo "::error::mu_basecore checkout not found in out/feeds"; exit 1; }
           echo "using edk2 at $EDK2"

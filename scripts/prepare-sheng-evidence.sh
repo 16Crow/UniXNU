@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
-# 本轮只能采集证据，禁止后续步骤把最小候选包装成完整系统。
-if [ "${STEPS:-kernel}" != kernel ]; then
-  echo 'Evidence preparation requires steps=kernel; full payloads need a separate verified build.' >&2
+# 证据采集只在本轮的前半段进行；后续的固件与镜像步骤建立在采集完成的内核之上。
+# STEPS 必须以 kernel 开头，否则说明有人想把最小候选直接包装成完整系统。
+if [ "${STEPS:-kernel}" != kernel ] && [[ "${STEPS:-}" != kernel\ * ]]; then
+  echo 'Evidence preparation requires steps to start with kernel; full payloads need a separate verified build.' >&2
   exit 1
 fi
 
