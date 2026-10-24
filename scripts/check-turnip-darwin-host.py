@@ -59,7 +59,10 @@ for name in ['NativeAdrenoMemory', 'NativeAdrenoSmmuMemory', 'NativeAdrenoVm', '
 shim_obj = out / 'host_iokit_shim.o'
 subprocess.run(['xcrun', 'clang++', '-std=c++17', '-O1', '-fPIC', '-c', sim / 'host_iokit_shim.cpp', '-o', shim_obj], check=True)
 shim = out / 'libhostiokit.dylib'
-subprocess.run(['xcrun', 'clang++', '-dynamiclib', '-o', shim, service, shim_obj, *core, *objects,
+# 主机程序没有内核的 proc_selfpid，使用真实宿主进程号提供相同信息。
+process = out / 'host_process.cpp'
+process.write_text('#include <unistd.h>\nextern "C" int proc_selfpid(void) { return getpid(); }\n')
+subprocess.run(['xcrun', 'clang++', '-dynamiclib', '-o', shim, service, shim_obj, process, *core, *objects,
                 '-framework', 'IOKit', '-framework', 'CoreFoundation'], check=True)
 smoke = out / 'vulkan_smoke'
 subprocess.run(['xcrun', 'clang', '-std=c11', '-O1', '-I', '/opt/homebrew/include', sim / 'vulkan_smoke.c', '-o', smoke,

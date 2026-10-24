@@ -309,6 +309,19 @@ jobs:
             out/sheng/tree/build/adreno-metal-plugin/*.plist
           key: sheng-gpu-${{ inputs.xcode }}-${{ steps.gpu_source.outputs.source_id }}-${{ hashFiles('feeds.toml', '.gitmodules', 'scripts/data/*inputs.json', 'scripts/*turnip*.py', 'scripts/*metal*.py', 'scripts/prepare-sheng-mesa.py', 'scripts/prepare-sheng-gpu.sh', 'scripts/requirements-adreno-compiler.txt', 'patches/mesa/**') }}
 
+      - name: Restore compiled Mesa libraries
+        id: mesa_cache
+        if: contains(inputs.steps, 'payload') || inputs.steps == 'gpu'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sheng/tree/.cache/mesa-work
+            out/sheng/tree/.cache/mesa-venv
+            out/sheng/tree/.cache/mesa-tools
+            out/sheng/tree/build/mesa-tu
+            out/sheng/tree/build/mesa-tu-ios
+          key: sheng-mesa-${{ inputs.xcode }}-${{ steps.gpu_source.outputs.source_id }}-${{ hashFiles('scripts/data/adreno-compiler-inputs.json', 'scripts/build-turnip-darwin.py', 'scripts/mesa_patch_identity.py', 'scripts/prepare-sheng-mesa.py', 'scripts/requirements-adreno-compiler.txt', 'patches/mesa/**') }}
+
       - name: Build GPU userspace
         id: gpu
         if: (contains(inputs.steps, 'payload') || inputs.steps == 'gpu') && steps.gpu_cache.outputs.cache-hit != 'true'
@@ -316,6 +329,18 @@ jobs:
           ./unixnu tree
           mkdir -p out/sheng/logs
           bash scripts/prepare-sheng-gpu.sh 2>&1 | tee out/sheng/logs/gpu-userspace.log
+
+      - name: Save compiled Mesa libraries
+        if: always() && steps.mesa_cache.outcome == 'success' && steps.mesa_cache.outputs.cache-hit != 'true' && hashFiles('out/sheng/tree/build/mesa-tu-ios/src/freedreno/vulkan/libvulkan_freedreno.dylib') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            out/sheng/tree/.cache/mesa-work
+            out/sheng/tree/.cache/mesa-venv
+            out/sheng/tree/.cache/mesa-tools
+            out/sheng/tree/build/mesa-tu
+            out/sheng/tree/build/mesa-tu-ios
+          key: ${{ steps.mesa_cache.outputs.cache-primary-key }}
 
       - name: Save compiled GPU plugin
         if: steps.gpu.outcome == 'success' && steps.gpu_cache.outputs.cache-hit != 'true'
