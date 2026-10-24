@@ -24,8 +24,13 @@ on:
           - kernel userdata
           - kernel userdata payload
           - kernel payload firmware bootimg
+          - kernel userdata payload firmware bootimg
           - firmware
         default: kernel
+      export_images:
+        description: Encrypt images into a private draft release for local retrieval
+        type: boolean
+        default: false
       xcode:
         description: Xcode version of the macos-26 image (/Applications/Xcode_<version>.app)
         required: true
@@ -60,7 +65,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 # One build per device configuration and ref. A dispatch for another device or defconfig runs next to it,
 # and a running build is never cancelled by a later dispatch.
@@ -111,6 +116,8 @@ jobs:
         id: check
         env:
           HAS_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID != '' }}
+          HAS_EXPORT_KEY: ${{ secrets.UNIXNU_EXPORT_PASSWORD != '' }}
+          EXPORT_IMAGES: ${{ inputs.export_images }}
           OWNER_TRUST_CACHE: ${{ inputs.owner_trust_cache }}
           GROW_GIB: ${{ inputs.grow_gib }}
           SKIP_SETUP: ${{ inputs.skip_setup }}
@@ -123,6 +130,10 @@ jobs:
           if [ -n "$data_seed_url" ]; then echo "::add-mask::$data_seed_url"; fi
           fail() { echo "::error::$1"; exit 1; }
           [ -f device/board.toml ] || fail "the device repository has no board.toml"
+          if [ "$EXPORT_IMAGES" = true ]; then
+            [ "$HAS_EXPORT_KEY" = true ] || fail "private export requires UNIXNU_EXPORT_PASSWORD"
+            [[ "$STEPS" == *userdata* && "$STEPS" == *bootimg* ]] || fail "private export requires userdata and bootimg steps"
+          fi
           [ -f "device/configs/$DEFCONFIG" ] || fail "device/configs/$DEFCONFIG not found: $(cd device/configs 2>/dev/null && printf '%s ' *_defconfig)"
           [ -d "$DEVELOPER_DIR" ] || fail "Xcode not found at $DEVELOPER_DIR; installed: $(printf '%s ' /Applications/Xcode_*.app)"
           if [ -n "$GROW_GIB" ] && ! [[ "$GROW_GIB" =~ ^[0-9]+$ ]]; then fail "grow_gib must be a whole number of GiB"; fi
@@ -294,6 +305,10 @@ jobs:
           OWNER_TRUST_CACHE: ${{ inputs.owner_trust_cache }}
         run: |
           args=()
+          # 未提供外部缓存时，从目标 IPSW 生成板级白名单内的两个原始模块。
+          if [ ! -f "$RUNNER_TEMP/trustcache" ]; then
+            python3 scripts/prepare-sheng-trust-cache.py "$RUNNER_TEMP/trustcache"
+          fi
           if [ -f "$RUNNER_TEMP/trustcache" ]; then
             if [ "$OWNER_TRUST_CACHE" = true ]; then
               args+=(--owner-trust-cache "$RUNNER_TEMP/trustcache")
@@ -345,6 +360,13 @@ jobs:
           echo "using dtb $DTB"
           ./unixnu bootimg --uefi "$GITHUB_WORKSPACE/uefi-sheng" --dtb "$DTB" -o "$GITHUB_WORKSPACE/out/sheng/boot/boot.img"
           ls -l "$GITHUB_WORKSPACE/out/sheng/boot/boot.img"
+
+      - name: Export encrypted images to a private draft
+        if: inputs.export_images && steps.bootimg.outcome == 'success' && steps.userdata.outcome == 'success'
+        env:
+          UNIXNU_EXPORT_PASSWORD: ${{ secrets.UNIXNU_EXPORT_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/export-sheng-images.sh
 
       - name: Collect the text logs
         id: logs
@@ -413,7 +435,7 @@ jobs:
             echo "| firmware | ${FIRMWARE:-skipped} |"
             echo "| boot image | ${BOOTIMG:-skipped} |"
             echo
-            echo "This workflow only checks that the build works. It publishes text logs (7 days) and no images."
+            echo "Build success is not hardware validation. Text logs expire in 7 days; optional image export is encrypted in a private draft."
             xcodebuild -version
           } >> "$GITHUB_STEP_SUMMARY"
 
