@@ -5,12 +5,16 @@ The kernel half is the real GPU context bring-up, VM, ring, submit and user-clie
 (tests/hostsim/host_gpu_service.cpp); an IOKit shim answers the backend's IOKit calls. Nothing here runs a shader or touches
 hardware: the software CP retires every submission at once. Needs the host Turnip build (build-turnip-darwin.py --target host)."""
 import os
+import argparse
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--build-only', action='store_true', help='Build replay tools without running host checks')
+args = parser.parse_args()
 kit = ROOT / 'drivers/NativeAdreno'
 sim = kit / 'tests/hostsim'
 out = ROOT / 'build/turnip-darwin-host'
@@ -59,6 +63,11 @@ subprocess.run([sys.executable, ROOT / 'scripts/gen-turnip-smoke-shaders.py'], c
 subprocess.run(['xcrun', 'clang++', '-std=c++17', '-O1', '-I', ROOT / 'drivers/NativeMetal', '-I', ROOT / '.cache/mesa-work/include',
                 '-I', ROOT / 'build/turnip-smoke',
                 sim / 'plugin_smoke.cpp', '-o', plugin_smoke], check=True)
+# 回放头文件只依赖工具本身，允许构建时省略额外测试套件。
+if args.build_only:
+    print('Built host replay tools; host checks were not run')
+    sys.exit(0)
+
 env = dict(os.environ, DYLD_INSERT_LIBRARIES=str(shim), MESA_LOG='')
 env.pop('TU_DARWIN_SERVICE', None)   # the default is the production transport: accelerator service, open type 0x4147, tunnel through one admitted selector
 result = subprocess.run([str(smoke), str(library)], env=env, capture_output=True, text=True, timeout=300)
