@@ -16,6 +16,17 @@ printf '%s\n' 'CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"' > "$UNIXNU_DEVICE/config
 ./unixnu build kernel
 
 TREE=$ROOT/out/sheng/tree
+# 无论后续停在哪一步，都把实际虚拟机日志带回官方日志目录。
+collect_probe_logs() {
+  local result=$?
+  if [ -d "$TREE/build/darwinboot-storage-native-metadata" ]; then
+    while IFS= read -r path; do
+      cp "$path" "$ROOT/out/sheng/logs/$(basename "$path")" || true
+    done < <(find "$TREE/build/darwinboot-storage-native-metadata" -maxdepth 1 -name '*.log' -type f)
+  fi
+  exit "$result"
+}
+trap collect_probe_logs EXIT
 CANDIDATES=$TREE/build/native-prelink
 mkdir -p "$CANDIDATES"
 for name in native-apfs-load-positive native-defaults-candidate native-owner-mobile-graphics-candidate native-owner-ufs-cpu-desktop-v9-hid-init-candidate; do
@@ -46,10 +57,25 @@ export CLANG_BIN="$ROOT/out/sheng/toolchain/"
 cd "$TREE"
 bash scripts/build-darwinboot.sh 2>&1 | tee "$ROOT/out/sheng/logs/darwinboot-build.log"
 
-# 先确认真实候选能到达采集点，再生成存储元类的精确读取请求。
-# 失败时保留原始日志，不能把超时或 panic 当作已获得有效审计证据。
-python3 scripts/probe-darwinboot-xnu.py \
-  --kernel "$CANDIDATES/native-apfs-load-positive.macho" \
-  --output build/darwinboot-storage-preflight \
-  --break-symbol _bsd_init --timeout 120 \
+# 先从真实候选和本次编译对象计算采集地址，避免硬编码或伪造内存。
+python3 scripts/audit-storage-interface.py --prepare-snapshot \
+  2>&1 | tee "$ROOT/out/sheng/logs/storage-snapshot-plan.log"
+python3 - "$CANDIDATES/native-apfs-load-positive.macho" <<'PY' \
   2>&1 | tee "$ROOT/out/sheng/logs/qemu-storage-preflight.log"
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+plan = json.loads(Path('build/storage-abi/snapshot-plan.json').read_text())
+command = ['python3', 'scripts/probe-darwinboot-xnu.py', '--kernel', sys.argv[1],
+           '--output', 'build/darwinboot-storage-native-metadata',
+           '--break-symbol', '_bsd_init', '--timeout', '120']
+for request in plan['read_memory']:
+    command += ['--read-memory', request]
+subprocess.run(command, check=True)
+PY
+
+# 此步仍检查真实元类、父类、MMU 状态和候选哈希，超时不能算通过。
+python3 scripts/audit-storage-interface.py \
+  2>&1 | tee "$ROOT/out/sheng/logs/storage-interface-audit.log"

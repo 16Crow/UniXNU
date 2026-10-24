@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Qualify original ordinary-ARM64 block-storage ABI using public Darwin 23 source."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -8,10 +9,15 @@ import shutil
 import struct
 import subprocess
 import sys
+from storage_metadata import metaclass_layout
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'kits/NativePrelink'))
 import native_prelink as np
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--prepare-snapshot', action='store_true',
+                    help='Write exact live capture requests after checking the candidate; does not qualify the ABI')
+args = parser.parse_args()
 source = ROOT / 'refer/IOStorageFamily'
 revision = subprocess.check_output(['git', '-C', source, 'rev-parse', 'HEAD'], text=True).strip()
 if revision != 'e45fbe30a7879e0b16e26dddb78538f1b00e0bff':
@@ -177,12 +183,25 @@ if immediate & 0x100000:
     immediate -= 0x200000
 meta = (function & ~4095) + immediate * 4096 + (add >> 10 & 4095)
 service_meta = by_name['__ZN9IOService10gMetaClassE']
+
+# 存储审计只依赖当前编译对象的字段偏移，不依赖另一份 AES/KDK 审计。
+layout_obj = ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/libkern/DEVELOPMENT/OSMetaClass.cpo'
+dwarf = subprocess.check_output(['xcrun', 'dwarfdump', '--name=OSMetaClass', '--show-children', layout_obj], text=True)
+layout = metaclass_layout(dwarf)
+if args.prepare_snapshot:
+    capture = dict(kernel_sha256=plan['candidate_sha256'], needs_live_capture=True,
+                   checkpoint=hex(by_name['_bsd_init']),
+                   read_memory=[f'{meta:x}:50', f'{service_meta:x}:50'],
+                   compiled_metaclass_offsets=layout,
+                   layout_object_sha256=hashlib.sha256(layout_obj.read_bytes()).hexdigest())
+    (out / 'snapshot-plan.json').write_text(json.dumps(capture, indent=2) + '\n')
+    print('Prepared exact storage snapshot requests; live ABI is not yet qualified')
+    raise SystemExit(0)
 d = json.loads((ROOT / 'build/darwinboot-storage-native-metadata/gdb-stop.json').read_text())
 require(d['kernel_sha256'] == plan['candidate_sha256'] and not d['bounded_timeout_interrupted'], 'Wrong or incomplete live storage metadata observation')
+require(int(d['pc'], 16) == by_name['_bsd_init'], 'Snapshot did not reach actual bsd_init')
 actual = bytes.fromhex(d['memory'][f'{meta:x}:50'])
 service = bytes.fromhex(d['memory'][f'{service_meta:x}:50'])
-# The companion AES audit derives these member offsets from actual OSMetaClass DWARF.
-layout = json.loads((ROOT / 'build/image4-ignition/aes-interface-audit.json').read_text())['compiled_metaclass_offsets']
 require(layout == dict(superClassLink=16, className=24, classSize=32), 'Compiled metaclass ABI changed')
 require(struct.unpack_from('<Q', actual, layout['superClassLink'])[0] == service_meta and
         struct.unpack_from('<I', actual, layout['classSize'])[0] == 0x90 and
@@ -195,6 +214,8 @@ result = dict(public_source_revision=revision, source_sha256=hashlib.sha256((sou
               platform_header_sdk_version=subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-version'], text=True).strip(),
               platform_header_sha256=hashlib.sha256(conditions.read_bytes()).hexdigest(),
               candidate_sha256=plan['candidate_sha256'], original_executable_code_unchanged=True,
+              compiled_metaclass_offsets=layout,
+              layout_object_sha256=hashlib.sha256(layout_obj.read_bytes()).hexdigest(),
               method_slots=190, kernel_bindings=matched, pure_virtual_slots=14, inherited_kernel_methods=162,
               vtable=hex(table), original_metaclass=hex(meta), source_ioservice_metaclass=hex(service_meta),
               original_protected_constructor=hex(constructors[0][0]), original_base_destructor=hex(destructor),

@@ -37,6 +37,8 @@ parser.add_argument('--log-syscalls', action='store_true', help='Capture bounded
 parser.add_argument('--entry-after', help='Arm the primary observation only after this actual kernel function entry')
 parser.add_argument('--native-air-init', '--native-graphics-init', dest='native_air_init', action='store_true', help='Explicit offline own signed graphics instrument in the existing init slot; never a desktop result')
 parser.add_argument('--break-symbol', default='_panic')
+parser.add_argument('--read-memory', action='append', default=[], metavar='HEX_ADDRESS:HEX_LENGTH',
+                    help='Forward bounded read-only guest memory requests to the official stop helper')
 parser.add_argument('--inspect-sheng-pmgr', action='store_true', help='Read the opt-in original PMGR lifecycle observations')
 parser.add_argument('--break-address', type=lambda value: int(value, 0), help='Observe a qualified original component address with an exact prelink report')
 parser.add_argument('--require-crypto14', action='store_true', help='Require the real provider and PRNG to have completed initialization')
@@ -555,6 +557,8 @@ gdb_command = ['python3', ROOT / 'scripts/qemu-entry/gdb-stop.py', f'0x{panic[1]
                '--system-registers', '--timeout', str(args.timeout), '--qemu-accel', args.qemu_accel,
                '--qemu-memory-mib', str(args.qemu_memory_mib)]
 gdb_command += process_list_args
+for request in args.read_memory:
+    gdb_command += ['--read-memory', request]
 if args.capture_scratch_data:
     if not args.data_ramdisk:
         parser.error('Scratch Data capture requires an actual Data RAM disk input')
