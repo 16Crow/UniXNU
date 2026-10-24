@@ -57,11 +57,6 @@ collect_probe_logs() {
 trap collect_probe_logs EXIT
 CANDIDATES=$TREE/build/native-prelink
 mkdir -p "$CANDIDATES"
-for name in native-apfs-load-positive native-defaults-candidate native-owner-mobile-graphics-candidate native-owner-ufs-cpu-desktop-v9-hid-init-candidate; do
-  cp out/sheng/kernel/kernel.macho "$CANDIDATES/$name.macho"
-  cp out/sheng/kernel/kernel.json "$CANDIDATES/$name.json"
-done
-rm out/sheng/kernel/kernel.macho out/sheng/kernel/kernel.json
 
 # 保持 PMGR 等旧工具读取的原版缓存与 board.toml 校验过的输入一致。
 ORIGINAL=$(./unixnu ipsw fetch KernelCache | tail -n 1)
@@ -70,6 +65,13 @@ mkdir -p "$TREE/.cache/firmware/kernelcache.macho"
 cp "$ORIGINAL" "$TREE/.cache/firmware/kernelcache.macho/kernelcache.release.ipad7.decompressed"
 
 ./unixnu build package
+# package 会重组源码引用；prelink 恢复 kernel 的引用，不重复编译 XNU。
+./unixnu build prelink
+for name in native-apfs-load-positive native-defaults-candidate native-owner-mobile-graphics-candidate native-owner-ufs-cpu-desktop-v9-hid-init-candidate; do
+  cp out/sheng/kernel/kernel.macho "$CANDIDATES/$name.macho"
+  cp out/sheng/kernel/kernel.json "$CANDIDATES/$name.json"
+done
+rm out/sheng/kernel/kernel.macho out/sheng/kernel/kernel.json
 
 # 当前 CLI 与旧调试工具的目录不同，只映射真实产物，不伪造报告。
 EDK2=$(find "$ROOT/out/feeds" -maxdepth 1 -type d -name 'mu_basecore-*' -print -quit)

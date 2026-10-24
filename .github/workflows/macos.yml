@@ -205,6 +205,17 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash -euo pipefail -c "$PRE_BUILD"
 
+      - name: Restore kernel compilation cache
+        id: kernel_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sheng/tree/.cache/xnu-work
+            out/sheng/tree/.cache/fakeroot
+            out/sheng/tree/build/xnu
+            out/sheng/tree/build/availability
+          key: sheng-qemu-v1-${{ inputs.xcode }}-${{ hashFiles('patches/xnu/**', '.gitmodules', 'feeds.toml', 'scripts/build-xnu-4k-baseline.sh') }}
+
       - name: Prepare official build inputs
         id: kernel
         env:
@@ -212,6 +223,17 @@ jobs:
           # the shared rate limit (HTTP 403).
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/prepare-sheng-evidence.sh
+
+      - name: Save completed kernel compilation cache
+        if: always() && steps.kernel_cache.outputs.cache-hit != 'true' && hashFiles('out/sheng/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            out/sheng/tree/.cache/xnu-work
+            out/sheng/tree/.cache/fakeroot
+            out/sheng/tree/build/xnu
+            out/sheng/tree/build/availability
+          key: ${{ steps.kernel_cache.outputs.cache-primary-key }}
 
       - name: Build userdata
         id: userdata
