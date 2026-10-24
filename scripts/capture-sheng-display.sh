@@ -31,7 +31,8 @@ command = ['python3', 'scripts/probe-darwinboot-xnu.py', '--kernel', candidate,
            '--break-symbol', '__ZN11OSMetaClassC2EPKcPKS_j', '--finish-function',
            '--entry-kernel-bytes-field', '1:0:' + b'IOMobileFramebufferLegacy\0'.hex(),
            '--entry-max-skips', '4096', '--load-mobile-graphics',
-           '--armvirt', '--qemu-vmm-present', '--armcpu', '--timeout', '180']
+           '--armvirt', '--qemu-vmm-present', '--armcpu', '--timeout', '180',
+           '--nvram-proxy', '--crypto-hash-method', 'sha2-384', '--amfi-platform-only']
 subprocess.run(command, check=True)
 PY
 mkdir -p build/display-analysis

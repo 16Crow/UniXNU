@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--tree', type=Path, required=True)
     args = parser.parse_args()
     tree = args.tree.resolve()
+    run(['brew', 'install', 'openssl@3'], ROOT)
     host = tree / 'build/verified-root-host'
     keys = host / 'keys'
     keys.mkdir(parents=True, exist_ok=True, mode=0o700)

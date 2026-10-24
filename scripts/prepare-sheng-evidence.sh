@@ -50,6 +50,18 @@ collect_probe_logs() {
     done < <(find "$TREE/build/darwinboot-storage-native-metadata" -maxdepth 1 -name '*.log' -type f)
     if [ -f "$TREE/build/darwinboot-storage-native-metadata/gdb-stop.json" ]; then
       cp "$TREE/build/darwinboot-storage-native-metadata/gdb-stop.json" "$ROOT/out/sheng/logs/qemu-storage-snapshot.log" || true
+      python3 - "$CANDIDATES/native-apfs-load-positive.json" "$TREE/build/darwinboot-storage-native-metadata/gdb-stop.json" > "$ROOT/out/sheng/logs/qemu-fault-context.log" <<'PY_DIAG' || true
+import json, sys
+plan = json.load(open(sys.argv[1]))
+state = json.load(open(sys.argv[2]))
+addresses = [state.get('kernel_exception', {}).get('pc', state['pc'])]
+addresses += [frame['lr'] for frame in state.get('frame_chain', [])]
+for value in addresses:
+    address = int(value, 16)
+    matches = [dict(module=e['module'], segment=e['segment'], offset=hex(address-e['va']))
+               for e in plan['extents'] if e['va'] <= address < e['va'] + e['size']]
+    print(value, json.dumps(matches))
+PY_DIAG
     fi
   fi
   exit "$result"
@@ -101,7 +113,8 @@ plan = json.loads(Path('build/storage-abi/snapshot-plan.json').read_text())
 command = ['python3', 'scripts/probe-darwinboot-xnu.py', '--kernel', sys.argv[1],
            '--output', 'build/darwinboot-storage-native-metadata',
            '--break-symbol', '_bsd_init', '--timeout', '120',
-           '--armvirt', '--qemu-vmm-present', '--armcpu']
+           '--armvirt', '--qemu-vmm-present', '--armcpu',
+           '--nvram-proxy', '--crypto-hash-method', 'sha2-384', '--amfi-platform-only']
 for request in plan['read_memory']:
     command += ['--read-memory', request]
 subprocess.run(command, check=True)
