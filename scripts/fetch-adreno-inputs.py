@@ -4,6 +4,7 @@ import base64
 import concurrent.futures
 import hashlib
 import json
+import os
 from pathlib import Path
 import urllib.request
 
@@ -12,11 +13,17 @@ pins = json.loads((ROOT / 'scripts/data/adreno-inputs.json').read_text())
 
 
 def fetch(item):
+    # 获取固定版本输入，并校验原始内容身份。
     path, url, expected, blob, encoding = item
     if path.exists():
         data = path.read_bytes()
     else:
-        request = urllib.request.Request(url, headers={'User-Agent': 'sheng-offline-adreno-audit'})
+        headers = {'User-Agent': 'sheng-offline-adreno-audit'}
+        # CI 共享出口容易耗尽匿名额度；凭据仅发给 GitHub API。
+        token = os.environ.get('GITHUB_TOKEN')
+        if token and url.startswith('https://api.github.com/'):
+            headers['Authorization'] = 'Bearer ' + token
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=30) as response:
             data = response.read()
         if blob:
