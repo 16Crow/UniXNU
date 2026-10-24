@@ -129,3 +129,4 @@ bash scripts/capture-sheng-display.sh "$ROOT/out/sheng/logs"
 cd "$ROOT"
 python3 scripts/prepare-sheng-policies.py --tree "$TREE" \
   2>&1 | tee "$ROOT/out/sheng/logs/verified-root-policies.log"
+bash scripts/prepare-sheng-complete.sh

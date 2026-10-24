@@ -92,6 +92,8 @@ def main():
         for disk in reversed(disks):
             subprocess.run(['hdiutil', 'detach', disk], capture_output=True)
 
+    # C 编译记录引用这个可选导出目录，bootstrap 只创建了非 iOS 的同名目录。
+    (tree / 'build/xnu/ios-obj/EXPORT_HDRS/libsa').mkdir(parents=True, exist_ok=True)
     run(['python3', tree / 'scripts/build-verified-root-probe.py',
          '--component', 'os', '--include-systemos'], tree)
     run(['python3', tree / 'scripts/build-arm-driver.py', 'NativeVirtioBlock',
