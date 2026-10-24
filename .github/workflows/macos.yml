@@ -376,7 +376,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE/uefi-sheng" submodule update --init --recursive
           if [ "$STEPS" = firmware ]; then
             ./unixnu tree
-            python3 out/sheng/tree/scripts/fetch-sheng-dts.py
+            (cd out/sheng/tree && python3 scripts/fetch-sheng-dts.py)
             ln -s "$GITHUB_WORKSPACE/uefi-sheng" out/sheng/tree/uefi-sheng
           fi
           # 源码版固件仍需要 sheng 原厂分区配置，由官方导入工具从系统包提取。
