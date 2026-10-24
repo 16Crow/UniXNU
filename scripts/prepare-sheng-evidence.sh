@@ -110,3 +110,9 @@ PY
 # 此步仍检查真实元类、父类、MMU 状态和候选哈希，超时不能算通过。
 python3 scripts/audit-storage-interface.py \
   2>&1 | tee "$ROOT/out/sheng/logs/storage-interface-audit.log"
+
+# 存储证据通过后继续补齐完整显示链和两个原始卷的验证策略。
+bash scripts/capture-sheng-display.sh "$ROOT/out/sheng/logs"
+cd "$ROOT"
+python3 scripts/prepare-sheng-policies.py --tree "$TREE" \
+  2>&1 | tee "$ROOT/out/sheng/logs/verified-root-policies.log"
