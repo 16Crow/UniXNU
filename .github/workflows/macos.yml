@@ -206,6 +206,32 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash -euo pipefail -c "$PRE_BUILD"
 
+      - name: Prepare the Data seed
+        id: data_seed
+        if: contains(inputs.steps, 'payload')
+        # 内核按 UUID 选 Data 卷，而 macOS 没有任何工具能给 APFS 卷指定 UUID
+        # （newfs_apfs 没有 -u 选项，apfs.util -s 只能随机化）。所以顺序反过来：
+        # 先用 hdiutil create -fs APFS 造种子，读出它实际的 UUID，再把这个 UUID
+        # 作为 XNU_OWNER_DATA_VOLUME_UUID 编进内核。
+        run: |
+          set -euo pipefail
+          ./unixnu ipsw fetch OS
+          OS_DMG=$(find "$GITHUB_WORKSPACE/out/ipsw" -name '044-76040-038.dmg' | head -1)
+          [ -n "$OS_DMG" ] || { echo "::error::the OS disk image was not extracted"; exit 1; }
+          echo "OS image: $OS_DMG"
+          git submodule update --init --depth 1 drivers/DarwinBoot
+          python3 "$GITHUB_WORKSPACE/make-data-seed.py" \
+            --os-dmg "$OS_DMG" \
+            --packed-ramdisk "$GITHUB_WORKSPACE/drivers/DarwinBoot/Test/packed_ramdisk.py" \
+            --size-mib 1024 \
+            --output "$RUNNER_TEMP/data.dbr"
+          python3 scripts/seed-data-skip-setup.py "$RUNNER_TEMP/data.dbr" "$RUNNER_TEMP/data-setup.dbr"
+          mv "$RUNNER_TEMP/data-setup.dbr" "$RUNNER_TEMP/data.dbr"
+          SEED_UUID=$(cat "$RUNNER_TEMP/data.dbr.uuid")
+          echo "Data volume UUID: $SEED_UUID"
+          echo "seed_uuid=$SEED_UUID" >> "$GITHUB_OUTPUT"
+          ls -lh "$RUNNER_TEMP/data.dbr"
+
       - name: Restore kernel compilation cache
         id: kernel_cache
         uses: actions/cache/restore@v4
@@ -215,7 +241,9 @@ jobs:
             out/sheng/tree/.cache/fakeroot
             out/sheng/tree/build/xnu
             out/sheng/tree/build/availability
-          key: sheng-qemu-v1-${{ inputs.xcode }}-${{ hashFiles('patches/xnu/**', '.gitmodules', 'feeds.toml', 'scripts/build-xnu-4k-baseline.sh') }}
+          # 缓存键带上 Data 卷 UUID：内核把 UUID 编进了 XNU_OWNER_DATA_VOLUME_UUID，
+          # UUID 一变，缓存内核就和种子对不上，必须重新编译。
+          key: sheng-qemu-v1-${{ inputs.xcode }}-${{ steps.data_seed.outputs.seed_uuid || 'default' }}-${{ hashFiles('patches/xnu/**', '.gitmodules', 'feeds.toml', 'scripts/build-xnu-4k-baseline.sh') }}
 
       - name: Prepare official build inputs
         id: kernel
@@ -223,6 +251,8 @@ jobs:
           # prepare-xnu-source.py lists Apple sources through the GitHub API; anonymous calls from hosted runners hit
           # the shared rate limit (HTTP 403).
           GITHUB_TOKEN: ${{ github.token }}
+          # 内核编译时把这个 UUID 写进 XNU_OWNER_DATA_VOLUME_UUID，与 Data 种子匹配。
+          DATA_SEED_UUID: ${{ steps.data_seed.outputs.seed_uuid }}
         run: bash scripts/prepare-sheng-evidence.sh
 
       - name: Save completed kernel compilation cache
@@ -242,29 +272,6 @@ jobs:
         run: |
           ./unixnu build userdata
           df -h "$GITHUB_WORKSPACE"
-
-      - name: Build the Data seed
-        id: data_seed
-        if: contains(inputs.steps, 'payload')
-        # board.toml [payload.install] 让 payload 必须有 Data 种子。官方脚本给出配方
-        # （prepare-owner-data-fixture.py + packed_ramdisk.pack），但 APFS 卷 UUID 是随机的，
-        # 而内核按 UUID 选卷，UUID 编译在 defconfig 的 CONFIG_XNU_OWNER_DATA_VOLUME_UUID 里。
-        # 这里用 make-data-seed.py 精确指定它，再标记 Setup 完成并扩到平板分区大小。
-        run: |
-          set -euo pipefail
-          ./unixnu ipsw fetch OS
-          OS_DMG=$(find "$GITHUB_WORKSPACE/out/ipsw" -name '044-76040-038.dmg' | head -1)
-          [ -n "$OS_DMG" ] || { echo "::error::the OS disk image was not extracted"; exit 1; }
-          echo "OS image: $OS_DMG"
-          git submodule update --init --depth 1 drivers/DarwinBoot
-          python3 "$GITHUB_WORKSPACE/make-data-seed.py" \
-            --os-dmg "$OS_DMG" \
-            --packed-ramdisk "$GITHUB_WORKSPACE/drivers/DarwinBoot/Test/packed_ramdisk.py" \
-            --size-mib 1024 \
-            --output "$RUNNER_TEMP/data.dbr"
-          python3 scripts/seed-data-skip-setup.py "$RUNNER_TEMP/data.dbr" "$RUNNER_TEMP/data-setup.dbr"
-          mv "$RUNNER_TEMP/data-setup.dbr" "$RUNNER_TEMP/data.dbr"
-          ls -lh "$RUNNER_TEMP/data.dbr"
 
       - name: Build payload
         id: payload
@@ -367,6 +374,7 @@ jobs:
         env:
           BOARD: ${{ steps.check.outputs.board }}
           KERNEL: ${{ steps.kernel.outcome }}
+          DATA_SEED: ${{ steps.data_seed.outputs.seed_uuid }}
           USERDATA: ${{ steps.userdata.outcome }}
           PAYLOAD: ${{ steps.payload.outcome }}
           FIRMWARE: ${{ steps.firmware.outcome }}
@@ -378,6 +386,7 @@ jobs:
             echo "| Step | Result |"
             echo "| --- | --- |"
             echo "| kernel | ${KERNEL:-skipped} |"
+            echo "| data seed | ${DATA_SEED:-skipped} |"
             echo "| userdata | ${USERDATA:-skipped} |"
             echo "| payload | ${PAYLOAD:-skipped} |"
             echo "| firmware | ${FIRMWARE:-skipped} |"

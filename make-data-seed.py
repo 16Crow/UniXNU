@@ -43,7 +43,18 @@ Then:
   ./unixnu build payload --unique-chip-id <hex> --trust-cache <bundle> \
       --data-ramdisk data.dbr [--skip-setup]
 
-The script needs macOS only: hdiutil, diskutil and newfs_apfs.
+The script needs macOS only: hdiutil, diskutil and packed_ramdisk.
+
+About the volume UUID
+---------------------
+The kernel selects the Data volume by UUID, and the value is compiled in as
+XNU_OWNER_DATA_VOLUME_UUID (build-xnu-4k-baseline.sh reads it from the
+environment; configs/sheng_defconfig only supplies a default).  macOS has no
+tool that formats an APFS volume with a chosen UUID: newfs_apfs takes no -u
+option, and apfs.util -s only randomises.  So the direction is the other way
+round: format the seed, read the UUID macOS assigned, and pass that UUID to
+the kernel build as XNU_OWNER_DATA_VOLUME_UUID.  The script writes the UUID to
+<output>.uuid next to the image for exactly that step.
 """
 import argparse
 import hashlib
@@ -58,7 +69,9 @@ import tempfile
 from pathlib import Path
 
 # The UUID the sheng kernel looks for.  It is the value of
-# CONFIG_XNU_OWNER_DATA_VOLUME_UUID in configs/sheng_defconfig.
+# CONFIG_XNU_OWNER_DATA_VOLUME_UUID in configs/sheng_defconfig, and only the
+# default: the kernel build takes XNU_OWNER_DATA_VOLUME_UUID from the
+# environment, and this script reports the UUID it actually used.
 DATA_VOLUME_UUID = '18AB5557-DC2D-469B-8758-855E60F5B0DF'
 VOLUME_NAME = 'OwnerData'
 # Directories the Data volume must have even when the original tree is thin.
@@ -112,12 +125,10 @@ def main():
                         help='Path to drivers/DarwinBoot/Test/packed_ramdisk.py')
     parser.add_argument('--size-mib', type=int, default=64,
                         help='Raw container size in MiB (default 64; grow it later with seed-data-grow.py)')
-    parser.add_argument('--uuid', default=DATA_VOLUME_UUID,
-                        help='APFS volume UUID (default: the one the sheng kernel selects)')
     args = parser.parse_args()
 
     if sys.platform != 'darwin':
-        raise SystemExit('This script needs macOS: hdiutil, diskutil and newfs_apfs.')
+        raise SystemExit('This script needs macOS: hdiutil and diskutil.')
 
     os_dmg = args.os_dmg.resolve()
     if not os_dmg.is_file():
@@ -156,39 +167,24 @@ def main():
                 raise SystemExit(f'{os_mount} has no private/var; wrong disk image?')
             print(f'mounted the original OS volume from {os_dmg.name}')
 
-            # 2. A raw container we can format with a chosen UUID.
-            with raw.open('wb') as handle:
-                handle.truncate(size)
-            store = attach_plist('hdiutil', 'attach', '-imagekey',
-                                 'diskimage-class=CRawDiskImage', '-nomount', '-nobrowse',
-                                 '-plist', str(raw))
-            store_device = store['system-entities'][0]['dev-entry']
+            # 2. Let macOS build the APFS image itself.  hdiutil create -fs APFS is the
+            # path the upstream fixture uses; newfs_apfs cannot set a volume UUID (no
+            # such option), so the UUID is read back and reported for the kernel build.
+            run('hdiutil', 'create', '-size', f'{args.size_mib}m', '-layout', 'NONE',
+                '-fs', 'APFS', '-volname', VOLUME_NAME, '-type', 'UDTO', str(raw))
+            attached_seed = attach_plist('hdiutil', 'attach', '-nobrowse', '-owners', 'off',
+                                         '-mountpoint', str(seed_mount), '-plist', str(raw))
+            seed_entities = attached_seed['system-entities']
+            mounted = [e for e in seed_entities if e.get('mount-point') == str(seed_mount)]
+            if len(mounted) != 1:
+                raise SystemExit('Require exactly one newly formatted scratch volume')
+            volume_device = mounted[0]['dev-entry']
             try:
-                # 3. Format it as APFS with the exact volume UUID the kernel wants.
-                run('newfs_apfs', '-v', VOLUME_NAME, '-u', args.uuid,
-                    f'/dev/rdev{store_device.split("/")[-1]}')
-                info = attach_plist('diskutil', 'info', '-plist', store_device)
+                info = attach_plist('diskutil', 'info', '-plist', volume_device)
                 print(f'APFS volume {info.get("VolumeName")} uuid {info.get("VolumeUUID")}')
-                if str(info.get('VolumeUUID', '')).upper() != args.uuid.upper():
-                    raise SystemExit(f'the volume UUID is {info.get("VolumeUUID")}, expected {args.uuid}')
-
-                # 4. Mount the new volume and fill it with the original var tree.
-                listing = attach_plist('diskutil', 'apfs', 'list', '-plist')
-                store_id = store_device.split('/')[-1]
-                container_ref = None
-                for container in listing.get('Containers', []):
-                    for physical in container.get('PhysicalStores', []):
-                        if physical.get('DeviceIdentifier') == store_id:
-                            container_ref = container.get('ContainerReference')
-                if not container_ref:
-                    raise SystemExit('no APFS container was found on the attached seed')
-                volume_device = None
-                for volume in listing.get('Volumes', []):
-                    if volume.get('ContainerReference') == container_ref:
-                        volume_device = volume.get('DeviceIdentifier')
-                if not volume_device:
-                    raise SystemExit('the new APFS volume was not found')
-                run('diskutil', 'mount', '-mountPoint', str(seed_mount), volume_device)
+                volume_uuid = str(info.get('VolumeUUID', ''))
+                if not volume_uuid:
+                    raise SystemExit('the formatted seed reports no volume UUID')
                 try:
                     files, copied = copy_tree(var, seed_mount)
                     for name in EXTRA_DIRECTORIES:
@@ -198,22 +194,26 @@ def main():
                 finally:
                     subprocess.run(['diskutil', 'unmount', volume_device], capture_output=True)
             finally:
-                subprocess.run(['hdiutil', 'detach', store_device, '-force'],
+                subprocess.run(['hdiutil', 'detach', volume_device, '-force'],
                                capture_output=True)
         finally:
             subprocess.run(['hdiutil', 'detach', os_device, '-force'], capture_output=True)
 
         # 5. Pack the raw container into the DBRDISK1 format the payload wants.
         metadata = packed_ramdisk.pack(raw, output)
+        # The kernel build needs the UUID this seed actually carries; the defconfig value is
+        # only a default and macOS cannot be told which UUID to use.
+        Path(str(output) + '.uuid').write_text(volume_uuid + '\n')
 
     report = {
         'output': str(output),
         'bytes': output.stat().st_size,
         'sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
-        'volume_uuid': args.uuid,
+        'volume_uuid': volume_uuid,
         'packed': metadata,
         'source': os_dmg.name,
         'seed_made_by': 'make-data-seed.py (from the public IPSW, not from the author)',
+        'kernel_env': {'XNU_OWNER_DATA_VOLUME_UUID': volume_uuid},
     }
     print(json.dumps(report, indent=2))
 

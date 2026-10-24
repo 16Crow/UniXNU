@@ -39,6 +39,13 @@ fi
 
 cd "$ROOT"
 ./unixnu defconfig "$DEFCONFIG"
+# 内核按 UUID 选 Data 卷。macOS 不能给 APFS 卷指定 UUID，所以 Data 种子先造、
+# 读出它实际的 UUID，再作为 XNU_OWNER_DATA_VOLUME_UUID 编进内核；defconfig 里
+# 那个值只是默认。
+if [ -n "${DATA_SEED_UUID:-}" ]; then
+  export XNU_OWNER_DATA_VOLUME_UUID="$DATA_SEED_UUID"
+  echo "kernel Data volume UUID: $DATA_SEED_UUID"
+fi
 ./unixnu build kernel
 test -s out/sheng/kernel/kernel.macho
 test -s out/sheng/kernel/kernel.json
