@@ -1,0 +1,358 @@
+name: sheng build all
+
+# 一次构建出可以直接刷进小米平板 6S Pro (sheng) 的全部产物：
+#   boot.img               启动镜像（UEFI 固件卷 + XNU 内核 + 负载）
+#   userdata-root.img      根文件系统镜像（iPadOS 的 OS + SystemOS 原始盘映像）
+#   trustcache.bundle      trust cache（从公开 IPSW 自建，板级白名单第一项）
+#
+# 产物通过 GitHub Release 附件下发：Release 附件单文件上限 2 GB 且不占 Actions 制品额度，
+# 12 GB 的 userdata-root.img 因此切成 6 段上传，用户在 Windows 上合并。
+#
+# 用法：在你的 fork 上 Actions -> sheng build all -> Run workflow。
+# 需要仓库 secret: UNIXNU_UNIQUE_CHIP_ID（16 位十六进制，任意自选的软件身份种子）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      xcode:
+        description: 'Xcode 版本 (macos-26 镜像内的 /Applications/Xcode_<版本>.app)'
+        required: true
+        default: '26.6'
+      chip_id:
+        description: '平台种子：16 位十六进制，任意非零的自选值（软件身份种子，非苹果芯片 ID）'
+        required: true
+        default: '207a1b2c3d4e5f60'
+      release_tag:
+        description: 'Release 标签名'
+        required: true
+        default: 'sheng-build-001'
+      build_userdata:
+        description: '同时构建 12 GB 的 userdata 镜像（耗时很久，需要约 20 GB 磁盘）'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # 上传 Release 附件需要
+
+concurrency:
+  group: sheng-build-all-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_ENV_HINTS: 1
+  DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode }}.app/Contents/Developer
+  UNIXNU_DEVICE: ${{ github.workspace }}/device
+  DEFCONFIG: sheng_defconfig
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    # macos-26 是 arm64 且带 Xcode 26；macos-latest 会漂移，旧镜像的 clang 会拒掉构建用的告警选项。
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - name: Check out UniXNU
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the device repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: UniXNU/UniXNU-sheng
+          ref: main
+          path: device
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
+
+      - name: Check out the UEFI port
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Mu-Silicium 的 sheng 移植。bootimg 与 firmware 步骤都要它。
+          repository: UniXNU/uefi-sheng
+          ref: main
+          path: uefi-sheng
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Install host tools
+        run: |
+          # cmake 与 ninja 随镜像自带。Homebrew 的 LLVM 是 keg-only，不上 PATH：驱动会自己找它，
+          # 其余步骤用 Xcode 的 clang。LLD 自 LLVM 23 起是独立 formula。
+          brew install llvm lld mtools dtc
+          if ! command -v unifdef >/dev/null; then
+            brew install unifdef
+            echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Report the runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          clang --version | head -n 1
+          python3 --version
+          df -h "$GITHUB_WORKSPACE"
+          for tool in git make clang cmake ninja unifdef ld.lld mformat mcopy dtc fdtput fdtget xcodebuild; do
+            path=$(command -v "$tool" || true)
+            printf '%-12s %s\n' "$tool" "${path:-MISSING}"
+          done
+
+      - name: Check the inputs
+        id: check
+        env:
+          CHIP_ID: ${{ inputs.chip_id }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ -f device/board.toml ] || fail "the device repository has no board.toml"
+          [ -f "device/configs/$DEFCONFIG" ] || fail "device/configs/$DEFCONFIG not found"
+          [ -d "$DEVELOPER_DIR" ] || fail "Xcode not found at $DEVELOPER_DIR; installed: $(printf '%s ' /Applications/Xcode_*.app)"
+          [ -f uefi-sheng/Resources/Scripts/mkbootimg.py ] || fail "uefi-sheng is not a Mu-Silicium checkout"
+          [ -f "$GITHUB_WORKSPACE/make-data-seed.py" ] || fail "make-data-seed.py is missing from the repository root; copy it from the guide"
+          # 平台种子是软件身份种子（设备树里的 /chosen/unique-chip-id 与 /chosen/chip-id），
+          # 不是苹果芯片 ID，所以任何非零的 16 位十六进制值都可以。
+          [[ "$CHIP_ID" =~ ^[0-9a-fA-F]{16}$ ]] || fail "chip_id must be 16 hex digits"
+          [ "$((16#${CHIP_ID:0:1}))" != 0 ] || fail "chip_id must not start with 0"
+          echo "chip id $CHIP_ID"
+          {
+            echo "## sheng build all"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| chip id | \`$CHIP_ID\` |"
+            echo "| release | \`${{ inputs.release_tag }}\` |"
+            echo "| userdata | ${{ inputs.build_userdata }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Select the device
+        run: ./unixnu defconfig "$DEFCONFIG"
+
+      - name: Fetch the sources
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # prepare-xnu-source.py 用 GitHub API 列苹果开源源码；匿名调用会撞到共享速率限制（HTTP 403）。
+          ./unixnu fetch
+
+      - name: Fetch the DarwinBoot submodule
+        # make-data-seed.py 需要 drivers/DarwinBoot/Test/packed_ramdisk.py（DBRDISK1 打包器）。
+        run: |
+          git submodule update --init --recursive drivers/DarwinBoot
+          ls -l drivers/DarwinBoot/Test/packed_ramdisk.py
+
+      - name: Fetch the IPSW components
+        run: ./unixnu ipsw fetch
+
+      - name: Build the kernel
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./unixnu build kernel
+
+      - name: Build the package
+        run: ./unixnu build package
+
+      - name: Build the UEFI firmware
+        # firmware 步骤要 Mu-Silicium 移植（--uefi）和 Mu_Basecore（--edk2）。
+        # unixnu fetch 已经把 edk2 拉到 out/feeds 里。
+        run: |
+          EDK2=$(find "$GITHUB_WORKSPACE/out/feeds" -maxdepth 1 -type d -name 'mu_basecore-*' | head -1)
+          [ -n "$EDK2" ] || { echo "::error::mu_basecore checkout not found in out/feeds"; exit 1; }
+          echo "using edk2 at $EDK2"
+          ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi-sheng" --edk2 "$EDK2"
+
+      - name: Build the trust cache
+        # 从公开 IPSW 自建：只含苹果原封不动的两个原始 trust 模块，
+        # 哈希正好是 board.toml [payload].trust_cache_sha256 的第一项，不需要作者提供。
+        run: |
+          python3 - <<'PY'
+          import hashlib, struct, urllib.request, zipfile, io, plistlib
+
+          URL = ('https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/'
+                 'DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw')
+
+          class RangeFile(io.RawIOBase):
+              def __init__(self, url, block=8 << 20):
+                  self.url, self.block, self.position, self.cache = url, block, 0, {}
+                  r = urllib.request.Request(url, method='HEAD')
+                  with urllib.request.urlopen(r, timeout=60) as resp:
+                      self.size = int(resp.headers['Content-Length'])
+              def readable(self): return True
+              def seekable(self): return True
+              def tell(self): return self.position
+              def seek(self, offset, whence=0):
+                  self.position = {0: offset, 1: self.position + offset, 2: self.size + offset}[whence]
+                  return self.position
+              def _block(self, index):
+                  if index not in self.cache:
+                      if len(self.cache) >= 4:
+                          self.cache.pop(next(iter(self.cache)))
+                      start = index * self.block
+                      end = min(start + self.block, self.size) - 1
+                      req = urllib.request.Request(self.url, headers={'Range': f'bytes={start}-{end}'})
+                      with urllib.request.urlopen(req, timeout=120) as r:
+                          self.cache[index] = r.read()
+                  return self.cache[index]
+              def readinto(self, buffer):
+                  want = min(len(buffer), self.size - self.position)
+                  done = 0
+                  while done < want:
+                      index, inside = divmod(self.position, self.block)
+                      data = self._block(index)[inside:inside + want - done]
+                      buffer[done:done + len(data)] = data
+                      done += len(data)
+                      self.position += len(data)
+                  return done
+
+          def der(data, at):
+              tag, length = data[at], data[at + 1]
+              at += 2
+              if length & 0x80:
+                  count = length & 0x7F
+                  length = int.from_bytes(data[at:at + count], 'big')
+                  at += count
+              return tag, at, length
+
+          def im4p_payload(data):
+              tag, start, length = der(data, 0)
+              assert tag == 0x30
+              at, items = start, []
+              while at < start + length:
+                  _, body, size = der(data, at)
+                  items.append(data[body:body + size])
+                  at = body + size
+              assert items[0] == b'IM4P'
+              return items[3]
+
+          archive = zipfile.ZipFile(RangeFile(URL))
+          manifest = plistlib.loads(archive.read('BuildManifest.plist'))
+          assert manifest['ProductBuildVersion'] == '21H461'
+          identity = next(i for i in manifest['BuildIdentities'] if i['Info']['DeviceClass'] == 'j120ap')
+          modules = []
+          for component in ('StaticTrustCache', 'Cryptex1,SystemTrustCache'):
+              member = identity['Manifest'][component]['Info']['Path']
+              module = im4p_payload(archive.read(member))
+              version, entries = struct.unpack_from('<I', module, 0)[0], struct.unpack_from('<I', module, 20)[0]
+              assert version == 2 and len(module) == 24 + entries * 24
+              modules.append(module)
+              print(f'{component}: {len(module)} bytes, {entries} entries')
+          static, system = modules
+          bundle = struct.pack('<3I', 2, 12, 12 + len(static)) + static + system
+          digest = hashlib.sha256(bundle).hexdigest()
+          print('bundle sha256', digest)
+          expected = '7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7'
+          if digest != expected:
+              raise SystemExit('trust cache bundle does not match the board allowlist')
+          open('trustcache.bundle', 'wb').write(bundle)
+          PY
+          ls -l trustcache.bundle
+
+      - name: Build the Data seed
+        # 作者不公开 Data 种子（CONTRIBUTING.md 与 docs/devices/umi.md 都写明 "not distributed"），
+        # 但官方脚本 scripts/prepare-owner-data-fixture.py 给出了配方：从公开 IPSW 的 OS 卷取 private/var，
+        # 装进一个 APFS 容器，再用 DarwinBoot 的 packed_ramdisk.pack() 打成 DBRDISK1。
+        # 官方脚本没做的一件事是指定 APFS 卷 UUID：内核按 UUID 选 Data 卷，
+        # 而那个 UUID 编译在 sheng_defconfig 的 CONFIG_XNU_OWNER_DATA_VOLUME_UUID 里。
+        # 这里用 newfs_apfs -u 精确指定它。
+        run: |
+          set -e
+          # OS 盘映像（约 8.7 GB）不在 board.toml 的 fetch 列表里，单独取。
+          ./unixnu ipsw fetch OS
+          OS_DMG=$(find "$GITHUB_WORKSPACE/out/ipsw" -name '044-76040-038.dmg' | head -1)
+          [ -n "$OS_DMG" ] || { echo "::error::the OS disk image was not extracted"; exit 1; }
+          ls -lh "$OS_DMG"
+          python3 "$GITHUB_WORKSPACE/make-data-seed.py" \
+            --os-dmg "$OS_DMG" \
+            --packed-ramdisk "$GITHUB_WORKSPACE/drivers/DarwinBoot/Test/packed_ramdisk.py" \
+            --size-mib 1024 \
+            --output "$GITHUB_WORKSPACE/data.dbr"
+          ls -lh "$GITHUB_WORKSPACE/data.dbr"
+
+      - name: Build the payload
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ inputs.chip_id }}
+        run: |
+          # --data-ramdisk 传自造的 Data 种子（DBRDISK1）。板级 packed_data_ramdisk=true，
+          # 所以内核拿到的是打包字节；--skip-setup 让种子跳过 Setup 直接进桌面。
+          ./unixnu build payload \
+            --unique-chip-id "$UNIXNU_UNIQUE_CHIP_ID" \
+            --trust-cache trustcache.bundle \
+            --data-ramdisk "$GITHUB_WORKSPACE/data.dbr" \
+            --skip-setup
+          ls -l "$GITHUB_WORKSPACE/out/sheng/payload/"
+
+      - name: Pack the boot image
+        run: |
+          # 启动镜像 = BootShim + UEFI 固件卷 + 负载 FAT 卷 + 设备树。
+          DTB=$(find "$GITHUB_WORKSPACE/out" -name 'sheng.dtb' | head -1)
+          if [ -z "$DTB" ]; then
+            DTB=$(find "$GITHUB_WORKSPACE/out" -name '*.dtb' | head -1)
+          fi
+          [ -n "$DTB" ] || { echo "::error::no compiled device tree found under out/"; exit 1; }
+          echo "using dtb $DTB"
+          ./unixnu bootimg --uefi "$GITHUB_WORKSPACE/uefi-sheng" --dtb "$DTB" -o "$GITHUB_WORKSPACE/out/sheng/boot/boot.img"
+          ls -l "$GITHUB_WORKSPACE/out/sheng/boot/boot.img"
+
+      - name: Build the userdata image
+        if: inputs.build_userdata
+        run: |
+          # 12 GB 左右的原始镜像：iPadOS 的 OS 与 SystemOS 盘映像原封不动放在一个 SHNGROOT 清单后面。
+          ./unixnu build userdata
+          df -h "$GITHUB_WORKSPACE"
+          ls -l "$GITHUB_WORKSPACE/out/sheng/userdata/"
+
+      - name: Collect the artifacts
+        id: collect
+        run: |
+          set -e
+          STAGE="$RUNNER_TEMP/artifacts"
+          mkdir -p "$STAGE"
+          cp "$GITHUB_WORKSPACE/out/sheng/boot/boot.img" "$STAGE/boot.img"
+          cp trustcache.bundle "$STAGE/trustcache.bundle"
+          cp data.dbr "$STAGE/data.dbr"
+          if [ -f "$GITHUB_WORKSPACE/out/sheng/userdata/userdata-root.img" ]; then
+            cp "$GITHUB_WORKSPACE/out/sheng/userdata/userdata-root.img" "$STAGE/userdata-root.img"
+            cp "$GITHUB_WORKSPACE/out/sheng/userdata/userdata-root.json" "$STAGE/userdata-root.json"
+          fi
+          # Release 附件单文件上限 2 GB。userdata-root.img 切成 1.9 GB 的段，用户在 Windows 上合并。
+          if [ -f "$STAGE/userdata-root.img" ]; then
+            split -b 1900m -d -a 2 "$STAGE/userdata-root.img" "$STAGE/userdata-root.part."
+            rm "$STAGE/userdata-root.img"
+          fi
+          ( cd "$STAGE" && shasum -a 256 * > SHA256SUMS )
+          cat "$STAGE/SHA256SUMS"
+          echo "path=$STAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the artifacts to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          STAGE=${{ steps.collect.outputs.path }}
+          gh release create "$TAG" --title "sheng build $TAG" --notes "由 GitHub Actions 构建的 UniXNU sheng 产物。" || true
+          gh release upload "$TAG" "$STAGE"/* --clobber
+          gh release view "$TAG" --json url -q .url
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## sheng build all"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| kernel | ${{ steps.kernel.outcome || 'skipped' }} |"
+            echo "| package | ${{ steps.package.outcome || 'skipped' }} |"
+            echo "| firmware | ${{ steps.firmware.outcome || 'skipped' }} |"
+            echo "| payload | ${{ steps.payload.outcome || 'skipped' }} |"
+            echo "| bootimg | ${{ steps.bootimg.outcome || 'skipped' }} |"
+            echo "| userdata | ${{ steps.userdata.outcome || 'skipped' }} |"
+            echo
+            echo "产物在 Release 附件里。userdata-root.img 被切成 1.9 GB 的段，Windows 上用合并脚本拼回去。"
+          } >> "$GITHUB_STEP_SUMMARY"
