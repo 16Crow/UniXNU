@@ -16,6 +16,8 @@ typedef UINTN size_t;
 #define LONG_MAX __LONG_MAX__
 #define assert(Value) ASSERT(Value)
 #define strlen(Value) AsciiStrLen(Value)
+// 搜索范围包含结尾零字节，保留标准 strchr 对空字符的行为。
+#define strchr(Value, Character) ((CONST CHAR8 *)ScanMem8(Value, AsciiStrSize(Value), (UINT8)(Character)))
 #define memcpy(Dest, Source, Size) CopyMem(Dest, Source, Size)
 #define memmove(Dest, Source, Size) CopyMem(Dest, Source, Size)
 #define memset(Dest, Value, Size) SetMem(Dest, Size, (UINT8)(Value))
