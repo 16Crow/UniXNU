@@ -133,7 +133,7 @@ jobs:
           [ -f device/board.toml ] || fail "the device repository has no board.toml"
           if [ "$EXPORT_IMAGES" = true ]; then
             [ "$HAS_EXPORT_KEY" = true ] || fail "private export requires UNIXNU_EXPORT_PASSWORD"
-            [[ "$STEPS" == *userdata* && "$STEPS" == *bootimg* ]] || fail "private export requires userdata and bootimg steps"
+            [[ "$STEPS" == *bootimg* ]] || fail "private export requires bootimg steps"
           fi
           [ -f "device/configs/$DEFCONFIG" ] || fail "device/configs/$DEFCONFIG not found: $(cd device/configs 2>/dev/null && printf '%s ' *_defconfig)"
           [ -d "$DEVELOPER_DIR" ] || fail "Xcode not found at $DEVELOPER_DIR; installed: $(printf '%s ' /Applications/Xcode_*.app)"
@@ -432,7 +432,7 @@ jobs:
           ls -l "$GITHUB_WORKSPACE/out/sheng/boot/boot.img"
 
       - name: Export encrypted images to a private draft
-        if: inputs.export_images && steps.bootimg.outcome == 'success' && steps.userdata.outcome == 'success'
+        if: inputs.export_images && steps.bootimg.outcome == 'success'
         env:
           UNIXNU_EXPORT_PASSWORD: ${{ secrets.UNIXNU_EXPORT_PASSWORD }}
           GH_TOKEN: ${{ github.token }}

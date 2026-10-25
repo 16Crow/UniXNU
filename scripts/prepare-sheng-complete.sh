@@ -43,9 +43,35 @@ cd "$ROOT"
 # 读出它实际的 UUID，再作为 XNU_OWNER_DATA_VOLUME_UUID 编进内核；defconfig 里
 # 那个值只是默认。
 if [ -n "${DATA_SEED_UUID:-}" ]; then
-  export XNU_OWNER_DATA_VOLUME_UUID="$DATA_SEED_UUID"
-  echo "kernel Data volume UUID: $DATA_SEED_UUID"
+  # 构建器会用 .config 覆盖环境变量，必须修改最终生效的配置。
+  python3 - "$ROOT/out/sheng/.config" "$DATA_SEED_UUID" <<'PY_DATA_CONFIG'
+from pathlib import Path
+import re
+import sys
+import uuid
+path = Path(sys.argv[1])
+value = str(uuid.UUID(sys.argv[2])).upper()
+text, count = re.subn(r'^CONFIG_XNU_OWNER_DATA_VOLUME_UUID=.*$',
+                     'CONFIG_XNU_OWNER_DATA_VOLUME_UUID="' + value + '"',
+                     path.read_text(), flags=re.M)
+if count != 1:
+    raise SystemExit('Expected exactly one Data UUID in the effective config')
+path.write_text(text)
+print('effective kernel Data volume UUID: ' + value)
+PY_DATA_CONFIG
 fi
 ./unixnu build kernel
 test -s out/sheng/kernel/kernel.macho
 test -s out/sheng/kernel/kernel.json
+if [ -n "${DATA_SEED_UUID:-}" ]; then
+  # 日志中出现新值不代表它已编入产物，直接核对最终预链接内核。
+  python3 - "$ROOT/out/sheng/kernel/kernel.macho" "$DATA_SEED_UUID" <<'PY_DATA_KERNEL'
+from pathlib import Path
+import sys
+import uuid
+value = str(uuid.UUID(sys.argv[2])).upper()
+if value.encode() not in Path(sys.argv[1]).read_bytes():
+    raise SystemExit('Built kernel does not contain the actual Data seed UUID')
+print('Verified actual Data seed UUID in the built kernel: ' + value)
+PY_DATA_KERNEL
+fi

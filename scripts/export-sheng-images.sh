@@ -7,11 +7,16 @@ cd "$ROOT"
 : "${GH_TOKEN:?Missing GitHub release token}"
 STAGE=$RUNNER_TEMP/sheng-private-export
 mkdir -p "$STAGE"
-for FILE in boot/boot.img boot/boot.json userdata/userdata-root.img userdata/userdata-root.json payload/payload.json; do
+FILES=(boot/boot.img boot/boot.json payload/payload.json)
+# 系统卷内容不变时只取回启动镜像，复用本地已完整校验的系统盘。
+if [[ " ${STEPS:-} " == *" userdata "* ]]; then
+  FILES+=(userdata/userdata-root.img userdata/userdata-root.json)
+fi
+for FILE in "${FILES[@]}"; do
   test -s "out/sheng/$FILE"
 done
 # 流式加密和分段，避免在 runner 上额外存放整份未压缩归档。
-tar -C out/sheng -cf - boot/boot.img boot/boot.json userdata/userdata-root.img userdata/userdata-root.json payload/payload.json \
+tar -C out/sheng -cf - "${FILES[@]}" \
   | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:UNIXNU_EXPORT_PASSWORD \
   | split -b 1800m -d -a 2 - "$STAGE/sheng-images.enc.part."
 (cd "$STAGE" && shasum -a 256 sheng-images.enc.part.* > SHA256SUMS)
