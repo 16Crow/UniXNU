@@ -20,3 +20,30 @@ ShengDiagLog (CONST CHAR8 *Format, ...)
     mShengDiagUsed += AsciiSPrint (mShengDiagText + mShengDiagUsed, Available, "%a", Line);
   }
 }
+
+STATIC VOID
+ShengDiagDumpHex (
+  IN CONST CHAR8  *Label,
+  IN CONST VOID   *Base,
+  IN UINTN        Length
+  )
+{
+  // 关键判别证据：initrd 开头/结尾字节区分 FAT 卷（eb 3c 90 4d 53 44 4f 53）
+  // 与安卓 vendor ramdisk（1f 8b gzip 或 30 37 30 37 cpio，尾部 TRAILER!!!）。
+  // 手工查表生成十六进制，不依赖 PrintLib 的宽度/补零支持。
+  STATIC CONST CHAR8  HexDigits[] = "0123456789abcdef";
+  CONST UINT8         *Bytes;
+  CHAR8               Line[112];
+  UINTN               Index;
+  UINTN               Used;
+
+  Bytes = Base;
+  Used  = 0;
+  for (Index = 0; (Index < Length) && (Used + 4 < sizeof (Line)); Index++) {
+    Line[Used++] = HexDigits[Bytes[Index] >> 4];
+    Line[Used++] = HexDigits[Bytes[Index] & 0x0f];
+    Line[Used++] = ' ';
+  }
+  Line[Used] = '\0';
+  ShengDiagLog ("SHENGMEM: %a %a\n", Label, Line);
+}

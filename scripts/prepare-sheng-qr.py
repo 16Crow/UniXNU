@@ -29,6 +29,16 @@ def prepare(uefi):
     if '#include "ShengDiagLog.h"' not in text:
         text = '#include <Uefi.h>\n#include <Library/UefiBootServicesTableLib.h>\n#include <Library/DebugLib.h>\n#include "ShengDiagLog.h"\n' + text
     source.write_text(text)
+    # initrd 因非整扇区被拒时，转储头尾字节：这是区分“我们的 FAT 被截断”
+    # 与“ABL 传的是 flash 里 stock vendor ramdisk”的唯一判别证据。
+    # 注意 replace_once 从磁盘重读，必须在 write_text 之后。
+    replace_once(source,
+                 'ShengDiagLog ("SHENGMEM: initrd 0x%lx-0x%lx is not a whole number of sectors\\n", Start, End);',
+                 'ShengDiagLog ("SHENGMEM: initrd 0x%lx-0x%lx is not a whole number of sectors\\n", Start, End);\n'
+                 '    ShengDiagDumpHex ("initrd head", (CONST VOID *)(UINTN)Start, 32);\n'
+                 '    if (End >= Start + 32) {\n'
+                 '      ShengDiagDumpHex ("initrd tail", (CONST VOID *)(UINTN)(End - 32), 32);\n'
+                 '    }')
     replace_once(source, '  Hob = GetFirstGuidHob (&gSiliciumEntryArgHobGuid);',
                  '  gBS->InstallConfigurationTable (&mShengDiagGuid, mShengDiagText);\n  Hob = GetFirstGuidHob (&gSiliciumEntryArgHobGuid);')
     replace_once(driver / 'ShengBootMemoryDxe.inf', '  BaseLib\n', '  BaseLib\n  PrintLib\n')
