@@ -1,6 +1,9 @@
 name: sheng display seed preferences
 
 on:
+  push:
+    branches: [sheng-evidence]
+    paths: [.github/workflows/sheng-display-seed.yml]
   workflow_dispatch:
     inputs:
       input_tag:
@@ -37,9 +40,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           UNIXNU_EXPORT_PASSWORD: ${{ secrets.UNIXNU_EXPORT_PASSWORD }}
-          INPUT_TAG: ${{ inputs.input_tag }}
-          EXPECTED_SHA256: ${{ inputs.seed_sha256 }}
-          DATA_UUID: ${{ inputs.data_uuid }}
+          INPUT_TAG: ${{ inputs.input_tag || 'sheng-display-seed-input-20261025-161157' }}
+          EXPECTED_SHA256: ${{ inputs.seed_sha256 || 'b33f749b901f6804d69c0691f5b3ee4a6f87b6e22e41767839eacbe70e99c2ab' }}
+          DATA_UUID: ${{ inputs.data_uuid || 'C5B64190-A953-4C0B-AA52-0993CF656667' }}
         run: |
           set -euo pipefail
           STAGE=$RUNNER_TEMP/sheng-display-seed
