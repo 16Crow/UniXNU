@@ -1,0 +1,60 @@
+name: sheng display seed preferences
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_tag:
+        description: Private draft containing the encrypted existing Data seed
+        required: true
+      seed_sha256:
+        description: Expected SHA256 of the plaintext source seed
+        required: true
+      data_uuid:
+        description: Existing Data UUID to preserve
+        required: true
+        default: C5B64190-A953-4C0B-AA52-0993CF656667
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: macos-26
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Fetch the packed Data helper
+        run: git submodule update --init --depth 1 drivers/DarwinBoot
+      - name: Repair only the existing Data seed preferences
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNIXNU_EXPORT_PASSWORD: ${{ secrets.UNIXNU_EXPORT_PASSWORD }}
+          INPUT_TAG: ${{ inputs.input_tag }}
+          EXPECTED_SHA256: ${{ inputs.seed_sha256 }}
+          DATA_UUID: ${{ inputs.data_uuid }}
+        run: |
+          set -euo pipefail
+          STAGE=$RUNNER_TEMP/sheng-display-seed
+          mkdir -p "$STAGE"
+          gh release download "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --pattern data-seed.enc --dir "$STAGE"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
+            -pass env:UNIXNU_EXPORT_PASSWORD -in "$STAGE/data-seed.enc" -out "$STAGE/source.dbr"
+          echo "$EXPECTED_SHA256  $STAGE/source.dbr" | shasum -a 256 -c -
+          sudo -n "$(command -v python3)" scripts/repair-seed-display-prefs.py \
+            "$STAGE/source.dbr" "$STAGE/display.dbr" "$DATA_UUID"
+          tar -C "$STAGE" -cf - display.dbr display.json \
+            | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt \
+              -pass env:UNIXNU_EXPORT_PASSWORD > "$STAGE/display-seed.enc"
+          (cd "$STAGE" && shasum -a 256 display-seed.enc > SHA256SUMS)
+          TAG=sheng-display-seed-$GITHUB_RUN_ID
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "sheng display seed $GITHUB_RUN_ID" --notes 'Encrypted Data seed; only display preferences changed.'
+          gh release upload "$TAG" "$STAGE/display-seed.enc" "$STAGE/SHA256SUMS" --repo "$GITHUB_REPOSITORY"
