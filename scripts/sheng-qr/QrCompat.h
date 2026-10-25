@@ -12,6 +12,8 @@ typedef UINTN size_t;
 #define true TRUE
 #define false FALSE
 #define SIZE_MAX MAX_UINTN
+#define INT16_MAX 32767
+#define LONG_MAX __LONG_MAX__
 #define assert(Value) ASSERT(Value)
 #define strlen(Value) AsciiStrLen(Value)
 #define memcpy(Dest, Source, Size) CopyMem(Dest, Source, Size)
