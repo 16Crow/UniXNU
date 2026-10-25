@@ -418,6 +418,13 @@ jobs:
           ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi-sheng" --edk2 "$EDK2"
           ls -l "$GITHUB_WORKSPACE/out/sheng/firmware/" 2>/dev/null || true
 
+      - name: Export encrypted QR diagnostic firmware
+        if: inputs.steps == 'firmware' && contains(inputs.pre_build, 'prepare-sheng-qr.py')
+        env:
+          UNIXNU_EXPORT_PASSWORD: ${{ secrets.UNIXNU_EXPORT_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/export-sheng-qr-firmware.sh
+
       - name: Pack the boot image
         id: bootimg
         if: contains(inputs.steps, 'bootimg')
